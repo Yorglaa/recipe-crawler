@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($docs = Invoke-RestMethod \"http://localhost:3001/api/docs/json\"; $docs.paths.PSObject.Properties | Where-Object { $_.Name -match \"embed|workspace\" } | Select-Object Name)",
+      "PowerShell($r = Invoke-WebRequest \"http://localhost:3001/api/docs\" -UseBasicParsing; $r.Content | Select-String -Pattern \"update-embed|embeddings\" -AllMatches | Select-Object -First 20)"
+    ]
+  }
+}
