@@ -114,6 +114,17 @@ def run_index(sites: list[str], limit: int, loop: bool):
             break
 
 
+_CSS = """
+body, .gradio-container { background: #f2ede4 !important; }
+.block, .panel { background: #faf7f2 !important; }
+"""
+
+_THEME = gr.themes.Soft(
+    primary_hue=gr.themes.colors.stone,
+    neutral_hue=gr.themes.colors.stone,
+)
+
+
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="Assistant Recettes") as demo:
         with gr.Tabs():
@@ -140,6 +151,11 @@ def build_app() -> gr.Blocks:
                         "Une entree legere sans gluten",
                         "Idee de dessert rapide pour ce soir",
                     ],
+                )
+
+                gr.Markdown("---")
+                gr.Button("Fermer l'application", variant="stop").click(
+                    fn=lambda: os._exit(0), inputs=[], outputs=[]
                 )
 
             # ── Onglet Admin ──────────────────────────────────────────────────
@@ -185,6 +201,12 @@ def build_app() -> gr.Blocks:
                 index_btn = gr.Button("Indexer", variant="secondary")
                 index_log = gr.Textbox(label="Logs indexation", lines=25, max_lines=40, interactive=False)
 
+                # Fermeture ──────────────────────────────────────────────────
+                gr.Markdown("---")
+                gr.Button("Fermer l'application", variant="stop").click(
+                    fn=lambda: os._exit(0), inputs=[], outputs=[]
+                )
+
                 # Events ──────────────────────────────────────────────────────
                 refresh_btn.click(fn=_status, outputs=status_box)
 
@@ -207,4 +229,4 @@ if __name__ == "__main__":
     init_db()
     init_chroma()
     app = build_app()
-    app.launch(inbrowser=True, theme=gr.themes.Soft())
+    app.launch(inbrowser=True, theme=_THEME, css=_CSS)

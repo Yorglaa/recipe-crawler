@@ -102,17 +102,30 @@ Reads existing PDFs from disk, extracts metadata, and loads everything into SQLi
 # Index everything
 python index_recipes.py
 
-# Index only new qoqa recipes (5 at a time for testing)
-python index_recipes.py --sites qoqa --limit 5
+# Index only the next 200 qoqa recipes
+python index_recipes.py --sites qoqa --limit 200
 ```
 
 ### 3. Chat — launch the Gradio interface
 
+**Via the desktop shortcut** (Windows): double-click **Assistant Recettes** — the browser opens automatically.
+
+**Or from the terminal:**
+
 ```bash
-python ui/app.py
+venv\Scripts\python.exe ui/app.py    # Windows
+# python ui/app.py                   # Linux / macOS
 ```
 
-Opens in your browser. The chatbot uses hybrid search: SQL for structured queries (duration, category) and ChromaDB semantic search for everything else.
+The interface has two tabs:
+
+- **Chat** — ask questions in natural language; hybrid search (SQL for duration/category, ChromaDB for everything else)
+- **Admin** — manage crawling and indexing visually without touching the terminal:
+  - Launch a crawl batch per site with configurable limit and `--renew`
+  - Index PDFs in configurable batch sizes, with an optional loop until complete
+  - Live log streaming and status display
+
+Both tabs have a **Fermer l'application** button that shuts down the server and closes the console.
 
 ---
 
@@ -174,6 +187,7 @@ recipe-crawler/
 ├── main.py                 # Crawl PDFs (+ optional --index)
 ├── index_recipes.py        # Standalone indexer: PDFs → SQLite + ChromaDB
 ├── run_batch.py            # Production runner: loops main.py until done
+├── start_app.bat           # Windows launcher (uses venv automatically)
 │
 ├── crawlers/
 │   ├── viandesuisse.py     # viandesuisse.ch crawler
@@ -182,11 +196,11 @@ recipe-crawler/
 │
 ├── pipeline/
 │   ├── database.py         # SQLite metadata store
-│   ├── embeddings.py       # ChromaDB vector store
+│   ├── embeddings.py       # ChromaDB vector store (offline, no HF network calls)
 │   └── chat.py             # Query router + Gemini chat
 │
 ├── ui/
-│   └── app.py              # Gradio chat interface
+│   └── app.py              # Gradio interface: Chat + Admin tabs
 │
 ├── cache/                  # Auto-generated link/slug lists (gitignored)
 │   ├── migusto_slugs.json

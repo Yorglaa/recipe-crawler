@@ -4,7 +4,12 @@ Utilise sentence-transformers (all-MiniLM-L6-v2) comme embedding function.
 ChromaDB est thread-safe nativement.
 """
 
+import logging
+import os
 from pathlib import Path
+
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 import chromadb
 from chromadb.utils import embedding_functions
