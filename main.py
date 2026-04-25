@@ -4,52 +4,38 @@ import logging
 from pathlib import Path
 
 import config
+from index_recipes import PDF_DIRS, index_site
 
 logger = logging.getLogger(__name__)
 
 _SITES = {
     "viandesuisse": "crawlers.viandesuisse",
-    "migusto": "crawlers.migusto",
-    "qoqa": "crawlers.qoqa",
+    "migusto":      "crawlers.migusto",
+    "qoqa":         "crawlers.qoqa",
 }
-
-_OUTPUT_DIRS = {
-    "viandesuisse": "./pdfs/viandesuisse",
-    "migusto": "./pdfs/migusto",
-    "qoqa": "./pdfs/qoqa",
-}
-
-_WORKSPACE_SLUG = config.ANYTHINGLLM_WORKSPACE.lower()
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Recipe crawler pipeline: crawl sites and upload new PDFs to AnythingLLM."
+        description="Recipe crawler: download PDFs. Use index_recipes.py to index them."
     )
     parser.add_argument(
-        "--sites",
-        nargs="+",
+        "--sites", nargs="+",
         choices=list(_SITES) + ["all"],
-        default=["all"],
-        metavar="SITE",
+        default=["all"], metavar="SITE",
         help="Sites to crawl: viandesuisse, migusto, qoqa, or all (default: all)",
     )
     parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        metavar="N",
+        "--limit", type=int, default=None, metavar="N",
         help="Max NEW recipes per site (default: unlimited)",
     )
     parser.add_argument(
-        "--skip-upload",
-        action="store_true",
-        help="Skip AnythingLLM upload after crawling",
+        "--renew", action="store_true",
+        help="Ignore local link/slug cache and re-fetch from source",
     )
     parser.add_argument(
-        "--renew",
-        action="store_true",
-        help="Ignore local link/slug cache and re-fetch from source (migusto, qoqa)",
+        "--index", action="store_true",
+        help="Run indexer after crawling (SQLite + ChromaDB)",
     )
     return parser.parse_args()
 
@@ -57,10 +43,9 @@ def _parse_args() -> argparse.Namespace:
 def run_crawlers(
     sites: list[str], limit: int | None, renew: bool = False
 ) -> list[tuple[str, list[Path]]]:
-    """Run each crawler; return list of (output_dir, new_pdf_paths) per site."""
     results: list[tuple[str, list[Path]]] = []
     for site in sites:
-        out_dir = _OUTPUT_DIRS[site]
+        out_dir = PDF_DIRS[site]
         before = set(Path(out_dir).glob("*.pdf")) if Path(out_dir).exists() else set()
         logger.info("=== Crawling %s (limit=%s, renew=%s) -> %s ===", site, limit, renew, out_dir)
         try:
@@ -75,22 +60,6 @@ def run_crawlers(
     return results
 
 
-def upload_new_pdfs(results: list[tuple[str, list[Path]]], workspace_slug: str) -> None:
-    """Upload only the newly downloaded PDFs to AnythingLLM."""
-    from pipeline import anythingllm
-
-    for out_dir, new_pdfs in results:
-        if not new_pdfs:
-            logger.info("No new PDFs in %s, skipping upload", out_dir)
-            continue
-        logger.info("Uploading %d new PDFs from %s to workspace '%s'", len(new_pdfs), out_dir, workspace_slug)
-        for pdf in new_pdfs:
-            try:
-                anythingllm.upload_pdf(str(pdf), workspace_slug)
-            except Exception as exc:
-                logger.error("Upload failed for %s: %s", pdf.name, exc)
-
-
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -100,17 +69,19 @@ def main() -> None:
 
     args = _parse_args()
     sites = list(_SITES) if "all" in args.sites else args.sites
-    logger.info(
-        "Sites: %s | limit=%s | skip-upload=%s | renew=%s",
-        sites, args.limit, args.skip_upload, args.renew,
-    )
+    logger.info("Sites: %s | limit=%s | renew=%s | index=%s", sites, args.limit, args.renew, args.index)
 
-    results = run_crawlers(sites, args.limit, renew=args.renew)
+    run_crawlers(sites, args.limit, renew=args.renew)
 
-    if args.skip_upload:
-        logger.info("--skip-upload set, skipping AnythingLLM upload")
-    else:
-        upload_new_pdfs(results, _WORKSPACE_SLUG)
+    if args.index:
+        logger.info("--index flag set, running indexer...")
+        from pipeline.database import init_db
+        from pipeline.embeddings import init_chroma
+        init_db()
+        init_chroma()
+        for site in sites:
+            n = index_site(site)
+            logger.info("%s: %d recipes indexed", site, n)
 
     logger.info("Pipeline complete")
 

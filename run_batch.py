@@ -1,8 +1,7 @@
 """
 Production batch runner.
 
-Calls main.py in a loop for each site until no new recipes are found,
-uploading each batch to AnythingLLM as it goes.
+Calls main.py in a loop for each site until no new recipes are found.
 """
 import argparse
 import logging
@@ -26,12 +25,10 @@ def _count_pdfs(directory: str) -> int:
     return len(list(p.glob("*.pdf"))) if p.exists() else 0
 
 
-def _run_batch(site: str, batch_size: int, skip_upload: bool, renew: bool) -> int:
+def _run_batch(site: str, batch_size: int, renew: bool) -> int:
     """Run one batch via main.py; return number of new PDFs downloaded."""
     before = _count_pdfs(_PDF_DIRS[site])
     cmd = [sys.executable, "main.py", "--sites", site, "--limit", str(batch_size)]
-    if skip_upload:
-        cmd.append("--skip-upload")
     if renew:
         cmd.append("--renew")
     result = subprocess.run(cmd)
@@ -41,7 +38,7 @@ def _run_batch(site: str, batch_size: int, skip_upload: bool, renew: bool) -> in
     return after - before
 
 
-def _crawl_site(site: str, batch_size: int, delay: int, skip_upload: bool, renew: bool) -> int:
+def _crawl_site(site: str, batch_size: int, delay: int, renew: bool) -> int:
     """Run batches for one site until exhausted. Returns total new PDFs."""
     total = 0
     batch = 0
@@ -53,7 +50,7 @@ def _crawl_site(site: str, batch_size: int, delay: int, skip_upload: bool, renew
         logger.info("=" * 60)
 
         # --renew only on first batch to refresh cache once, not on every batch
-        new = _run_batch(site, batch_size, skip_upload, renew=renew and first_batch)
+        new = _run_batch(site, batch_size, renew=renew and first_batch)
         first_batch = False
         total += new
         logger.info("Batch %d done: +%d new PDFs (running total for %s: %d)", batch, new, site, total)
@@ -70,10 +67,7 @@ def _crawl_site(site: str, batch_size: int, delay: int, skip_upload: bool, renew
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Production batch crawler. Runs main.py in a loop per site "
-            "until all new recipes are downloaded and uploaded to AnythingLLM."
-        )
+        description="Production batch crawler. Runs main.py in a loop per site until all new recipes are downloaded."
     )
     parser.add_argument(
         "--sites",
@@ -96,11 +90,6 @@ def _parse_args() -> argparse.Namespace:
         default=30,
         metavar="SEC",
         help="Seconds to wait between batches (default: 30)",
-    )
-    parser.add_argument(
-        "--skip-upload",
-        action="store_true",
-        help="Download PDFs only, skip AnythingLLM upload",
     )
     parser.add_argument(
         "--renew",
@@ -127,7 +116,7 @@ def main() -> None:
 
     grand_total = 0
     for site in sites:
-        n = _crawl_site(site, args.batch_size, args.delay, args.skip_upload, args.renew)
+        n = _crawl_site(site, args.batch_size, args.delay, args.renew)
         grand_total += n
 
     logger.info("All sites complete. Grand total: %d new PDFs downloaded.", grand_total)

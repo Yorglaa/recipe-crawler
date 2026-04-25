@@ -1,6 +1,12 @@
 # recipe-crawler
 
-Crawl recipe websites, generate PDFs, and upload them to an [AnythingLLM](https://anythingllm.com) workspace for RAG-based querying.
+Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
+
+## Stack
+
+- **Crawlers**: BeautifulSoup · REST API · Playwright
+- **Indexer**: pdfplumber · SQLite (metadata) · ChromaDB + sentence-transformers (semantic search)
+- **Chat**: Gemini 2.5 Flash · Gradio
 
 ## Sites supported
 
@@ -17,7 +23,7 @@ Crawl recipe websites, generate PDFs, and upload them to an [AnythingLLM](https:
 - Python 3.11+
 - [weasyprint](https://doc.courtbouillon.org/weasyprint/) (+ GTK on Windows — see below)
 - [Playwright](https://playwright.dev/python/) with Chromium (for QoQa)
-- A running [AnythingLLM](https://anythingllm.com) instance with an API key
+- A Gemini API key
 
 ### Windows: weasyprint dependencies
 
@@ -44,64 +50,78 @@ playwright install chromium
 
 ## Configuration
 
-Copy `config.example.py` to `config.py` and fill in the values:
+Copy `config.example.py` to `config.py` and fill in your Gemini API key:
 
 ```python
-# URLs (pre-filled, change only if sites move)
-VIANDESUISSE_URL = "https://www.viandesuisse.ch/recettes"
-MIGUSTO_URL      = "https://www.migusto.ch/fr/recettes"
-QOQA_URL         = "https://www.qoqa.ch/fr/recettes"
-
-# AnythingLLM instance
-ANYTHINGLLM_API_URL   = "http://localhost:3001"
-ANYTHINGLLM_WORKSPACE = "Recettes"   # workspace name (case-insensitive slug)
-ANYTHINGLLM_API_KEY   = "your-key-here"
-
-# PDF output root
-PDF_OUTPUT_DIR = "./pdfs"
+GEMINI_API_KEY = "your-key-here"
 ```
 
-`config.py` is gitignored — never commit it.
+All other values have sensible defaults. `config.py` is gitignored — never commit it.
 
 ---
 
 ## Usage
 
-### One-shot run — `main.py`
+Crawling and indexing are independent operations.
+
+### 1. Crawl — download PDFs
 
 ```
-python main.py [--sites SITE [SITE ...]] [--limit N] [--skip-upload] [--renew]
+python main.py [--sites SITE [SITE ...]] [--limit N] [--renew]
 ```
 
 | Option | Description |
 |---|---|
 | `--sites` | `viandesuisse`, `migusto`, `qoqa`, or `all` (default: `all`) |
-| `--limit N` | Download at most **N new** recipes per site (skips already-downloaded) |
-| `--skip-upload` | Generate PDFs only, skip AnythingLLM upload |
+| `--limit N` | Download at most **N new** recipes per site |
 | `--renew` | Ignore local link/slug cache and re-fetch from source |
+| `--index` | Also run the indexer after crawling |
 
 **Examples:**
 
 ```bash
-# Download 10 new viandesuisse recipes and upload them
-python main.py --sites viandesuisse --limit 10
+# Download 10 new migusto recipes
+python main.py --sites migusto --limit 10
 
-# Download next 10 (incremental — skips the first 10 already on disk)
-python main.py --sites viandesuisse --limit 10
+# Crawl all sites with no limit
+python main.py
 
-# Dry-run all sites, 5 recipes each, no upload
-python main.py --sites all --limit 5 --skip-upload
-
-# Full run, no limit
-python main.py --sites migusto
+# Crawl and immediately index
+python main.py --sites migusto --limit 50 --index
 ```
 
-### Production batch run — `run_batch.py`
-
-Loops `main.py` automatically until a site is exhausted (no new recipes found). Uploads each batch as it goes.
+### 2. Index — build SQLite + ChromaDB
 
 ```
-python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--skip-upload] [--renew]
+python index_recipes.py [--sites SITE [SITE ...]] [--limit N]
+```
+
+Reads existing PDFs from disk, extracts metadata, and loads everything into SQLite and ChromaDB. Safe to re-run — already-indexed recipes are skipped.
+
+```bash
+# Index everything
+python index_recipes.py
+
+# Index only new qoqa recipes (5 at a time for testing)
+python index_recipes.py --sites qoqa --limit 5
+```
+
+### 3. Chat — launch the Gradio interface
+
+```bash
+python ui/app.py
+```
+
+Opens in your browser. The chatbot uses hybrid search: SQL for structured queries (duration, category) and ChromaDB semantic search for everything else.
+
+---
+
+### Production batch crawl — `run_batch.py`
+
+Loops `main.py` automatically until a site is exhausted (no new recipes found).
+
+```
+python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--renew]
 ```
 
 | Option | Default | Description |
@@ -109,26 +129,15 @@ python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--
 | `--sites` | `all` | Same choices as main.py |
 | `--batch-size N` | `50` | Recipes per batch |
 | `--delay SEC` | `30` | Seconds to wait between batches |
-| `--skip-upload` | — | Download only, no AnythingLLM upload |
-| `--renew` | — | Re-fetch link/slug list on first batch, then reuse the updated cache |
-
-**Examples:**
+| `--renew` | — | Re-fetch link/slug list on first batch |
 
 ```bash
-# Crawl all sites, 50 recipes per batch, upload each batch
-python run_batch.py
-
-# Crawl migusto only, bigger batches
+# Crawl migusto in batches of 100
 python run_batch.py --sites migusto --batch-size 100 --delay 60
 
-# Crawl viandesuisse and qoqa, no upload
-python run_batch.py --sites viandesuisse qoqa --skip-upload
+# After crawling, index everything
+python index_recipes.py
 ```
-
-#### Incremental / resumable
-
-Both scripts are fully incremental: a recipe whose PDF already exists on disk is skipped and **does not count toward `--limit`**.
-Running the same command twice will download the *next* N recipes, not re-download the same ones.
 
 ---
 
@@ -138,13 +147,13 @@ Collecting the full recipe list is expensive:
 - **migusto** requires ~330 paginated API calls to enumerate 7 950 slugs
 - **qoqa** requires a full Playwright session to click through "Voir plus"
 
-To avoid repeating this on every run, the list is cached locally as JSON after the first fetch.
+The list is cached locally as JSON after the first fetch.
 
 | Situation | Behaviour |
 |---|---|
 | No cache file yet | List is fetched from source and saved automatically |
 | Cache exists | Loaded instantly from disk (no network call) |
-| `--renew` passed | Cache is ignored, list is re-fetched and the cache file is overwritten |
+| `--renew` passed | Cache is ignored, list is re-fetched and overwritten |
 
 Cache files are stored in `./cache/` (gitignored):
 
@@ -154,8 +163,6 @@ cache/
 └── qoqa_links.json      # list of recipe URLs
 ```
 
-**viandesuisse** has only ~17 recipes fetched with a simple HTTP request — no cache needed.
-
 ---
 
 ## Project structure
@@ -164,7 +171,8 @@ cache/
 recipe-crawler/
 ├── config.example.py       # Template — copy to config.py and fill in secrets
 ├── config.py               # Local config (gitignored)
-├── main.py                 # CLI pipeline: crawl + upload one run
+├── main.py                 # Crawl PDFs (+ optional --index)
+├── index_recipes.py        # Standalone indexer: PDFs → SQLite + ChromaDB
 ├── run_batch.py            # Production runner: loops main.py until done
 │
 ├── crawlers/
@@ -173,7 +181,12 @@ recipe-crawler/
 │   └── qoqa.py             # qoqa.ch crawler (Playwright)
 │
 ├── pipeline/
-│   └── anythingllm.py      # AnythingLLM API client (upload + embed)
+│   ├── database.py         # SQLite metadata store
+│   ├── embeddings.py       # ChromaDB vector store
+│   └── chat.py             # Query router + Gemini chat
+│
+├── ui/
+│   └── app.py              # Gradio chat interface
 │
 ├── cache/                  # Auto-generated link/slug lists (gitignored)
 │   ├── migusto_slugs.json
@@ -193,17 +206,7 @@ recipe-crawler/
 Scrapes the paginated recipe list with BeautifulSoup, then fetches each recipe page to find the native print-PDF link (`/print/pdf/node/…`). Downloads the PDF directly.
 
 ### migusto.migros.ch
-Uses the internal REST API (`POST /.rest/recipes/v1`) to paginate through all ~7 950 recipes and collect slugs. For each slug, fetches the HTML page and extracts the `schema.org/Recipe` JSON-LD block (name, ingredients, steps, nutrition). Generates a formatted PDF with weasyprint. No authentication required.
+Uses the internal REST API (`POST /.rest/recipes/v1`) to paginate through all ~7 950 recipes and collect slugs. For each slug, fetches the HTML page and extracts the `schema.org/Recipe` JSON-LD block (name, ingredients, steps, nutrition). Generates a formatted PDF with weasyprint and saves a `.json` sidecar alongside it for fast indexing.
 
 ### qoqa.ch
 Uses Playwright (headless Chromium) to load the JS-rendered recipe list and click "Voir plus" until all links are collected. PDFs are downloaded directly from `https://download.qoqa.ch/fr/posts/{id}.pdf`.
-
----
-
-## AnythingLLM integration
-
-Each new PDF is:
-1. **Uploaded** via `POST /api/v1/document/upload`
-2. **Embedded** into the workspace via `POST /api/v1/workspace/{slug}/update-embeddings`
-
-Only PDFs downloaded in the current run are uploaded — existing PDFs already in the workspace are not re-uploaded.

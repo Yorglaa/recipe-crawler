@@ -1,1 +1,1 @@
-# Package pipeline — conversion PDF et injection AnythingLLM
+# Package pipeline — SQLite metadata, ChromaDB embeddings, Gemini chat

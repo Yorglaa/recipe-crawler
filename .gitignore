@@ -50,3 +50,7 @@ memory/
 
 # Link/slug cache
 cache/
+
+# RAG runtime data
+chromadb/
+recipes.db

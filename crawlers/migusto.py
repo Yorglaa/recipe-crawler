@@ -132,6 +132,15 @@ def generate_pdf(recipe_data: dict, output_dir: str) -> str | None:
     filename = f"migusto_{slug}.pdf"
     output_path = Path(output_dir) / filename
 
+    # Save JSON sidecar alongside PDF (used by index_recipes.py for structured metadata).
+    # Written even when PDF already exists so existing PDFs get a sidecar on next crawl.
+    json_path = output_path.with_suffix(".json")
+    if not json_path.exists():
+        json_path.write_text(
+            json.dumps(recipe_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     if output_path.exists():
         logger.info("PDF already exists, skipping: %s", filename)
         return str(output_path)

@@ -3,3 +3,9 @@ requests
 beautifulsoup4
 weasyprint
 httpx
+chromadb
+sentence-transformers
+google-genai
+gradio
+pdfplumber
+isodate
