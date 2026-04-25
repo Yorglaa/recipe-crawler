@@ -117,6 +117,19 @@ def run_index(sites: list[str], limit: int, loop: bool):
 _CSS = """
 body, .gradio-container { background: #f2ede4 !important; }
 .block, .panel { background: #faf7f2 !important; }
+
+/* Cases à cocher plus visibles */
+input[type="checkbox"] {
+    width: 18px !important;
+    height: 18px !important;
+    accent-color: #7c5c3e !important;
+    border: 2px solid #7c5c3e !important;
+    cursor: pointer;
+}
+.checkbox-group label span,
+label.svelte-1l3ixkv span {
+    font-size: 0.95rem !important;
+}
 """
 
 _THEME = gr.themes.Soft(
