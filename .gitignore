@@ -40,3 +40,6 @@ pdfs/
 
 # Playwright
 playwright/.auth/
+
+# Config with secrets
+config.py
