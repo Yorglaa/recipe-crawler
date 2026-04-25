@@ -88,8 +88,10 @@ def download_pdf(pdf_url: str, output_dir: str, recipe_url: str) -> str | None:
     return str(output_path)
 
 
-def crawl(output_dir: str = PDF_OUTPUT_DIR) -> None:
+def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
     recipe_links = get_recipe_links()
+    if limit is not None:
+        recipe_links = recipe_links[:limit]
     for recipe_url in recipe_links:
         try:
             pdf_url = get_pdf_url(recipe_url)

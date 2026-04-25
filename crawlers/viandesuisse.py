@@ -101,11 +101,13 @@ def download_pdf(pdf_url: str, output_dir: str, recipe_url: str) -> str | None:
     return output_path
 
 
-def crawl(output_dir: str = PDF_OUTPUT_DIR) -> None:
+def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
     """Orchestre le crawl complet : recupere les liens et telecharge tous les PDFs."""
     logger.info("Starting crawl of viandesuisse.ch")
 
     recipe_links = get_recipe_links()
+    if limit is not None:
+        recipe_links = recipe_links[:limit]
     logger.info("Starting download of %d PDFs", len(recipe_links))
 
     for i, recipe_url in enumerate(recipe_links, 1):
