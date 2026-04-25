@@ -81,12 +81,14 @@ def _iter_recipe_slugs():
 
 
 def _load_or_fetch_slugs(renew: bool) -> list[str]:
-    """Return full slug list from local cache, fetching from API if needed."""
+    """Return full slug list from local cache, fetching from API if absent or renew=True."""
     cache = Path(_CACHE_FILE)
     if not renew and cache.exists():
-        logger.info("Loading %d slugs from cache: %s", len(slugs := json.loads(cache.read_text("utf-8"))), _CACHE_FILE)
+        slugs = json.loads(cache.read_text("utf-8"))
+        logger.info("Loaded %d slugs from cache: %s", len(slugs), _CACHE_FILE)
         return slugs
-    logger.info("Fetching all slugs from API%s", " (--renew)" if renew else " (no cache)")
+    reason = "--renew requested" if renew else "no cache yet"
+    logger.info("Fetching all slugs from API (%s)", reason)
     slugs = list(_iter_recipe_slugs())
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(slugs, ensure_ascii=False, indent=2), encoding="utf-8")

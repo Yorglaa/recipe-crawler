@@ -70,7 +70,7 @@ PDF_OUTPUT_DIR = "./pdfs"
 ### One-shot run — `main.py`
 
 ```
-python main.py [--sites SITE [SITE ...]] [--limit N] [--skip-upload]
+python main.py [--sites SITE [SITE ...]] [--limit N] [--skip-upload] [--renew]
 ```
 
 | Option | Description |
@@ -78,6 +78,7 @@ python main.py [--sites SITE [SITE ...]] [--limit N] [--skip-upload]
 | `--sites` | `viandesuisse`, `migusto`, `qoqa`, or `all` (default: `all`) |
 | `--limit N` | Download at most **N new** recipes per site (skips already-downloaded) |
 | `--skip-upload` | Generate PDFs only, skip AnythingLLM upload |
+| `--renew` | Ignore local link/slug cache and re-fetch from source |
 
 **Examples:**
 
@@ -100,7 +101,7 @@ python main.py --sites migusto
 Loops `main.py` automatically until a site is exhausted (no new recipes found). Uploads each batch as it goes.
 
 ```
-python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--skip-upload]
+python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--skip-upload] [--renew]
 ```
 
 | Option | Default | Description |
@@ -109,6 +110,7 @@ python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--
 | `--batch-size N` | `50` | Recipes per batch |
 | `--delay SEC` | `30` | Seconds to wait between batches |
 | `--skip-upload` | — | Download only, no AnythingLLM upload |
+| `--renew` | — | Re-fetch link/slug list on first batch, then reuse the updated cache |
 
 **Examples:**
 
@@ -125,8 +127,34 @@ python run_batch.py --sites viandesuisse qoqa --skip-upload
 
 #### Incremental / resumable
 
-Both scripts are fully incremental: a recipe whose PDF already exists on disk is skipped and **does not count toward `--limit`**.  
+Both scripts are fully incremental: a recipe whose PDF already exists on disk is skipped and **does not count toward `--limit`**.
 Running the same command twice will download the *next* N recipes, not re-download the same ones.
+
+---
+
+## Cache (migusto and qoqa)
+
+Collecting the full recipe list is expensive:
+- **migusto** requires ~330 paginated API calls to enumerate 7 950 slugs
+- **qoqa** requires a full Playwright session to click through "Voir plus"
+
+To avoid repeating this on every run, the list is cached locally as JSON after the first fetch.
+
+| Situation | Behaviour |
+|---|---|
+| No cache file yet | List is fetched from source and saved automatically |
+| Cache exists | Loaded instantly from disk (no network call) |
+| `--renew` passed | Cache is ignored, list is re-fetched and the cache file is overwritten |
+
+Cache files are stored in `./cache/` (gitignored):
+
+```
+cache/
+├── migusto_slugs.json   # list of ~7 950 recipe slugs
+└── qoqa_links.json      # list of recipe URLs
+```
+
+**viandesuisse** has only ~17 recipes fetched with a simple HTTP request — no cache needed.
 
 ---
 
@@ -146,6 +174,10 @@ recipe-crawler/
 │
 ├── pipeline/
 │   └── anythingllm.py      # AnythingLLM API client (upload + embed)
+│
+├── cache/                  # Auto-generated link/slug lists (gitignored)
+│   ├── migusto_slugs.json
+│   └── qoqa_links.json
 │
 └── pdfs/                   # Generated PDFs (gitignored)
     ├── viandesuisse/
