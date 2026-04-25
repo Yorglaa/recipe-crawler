@@ -102,16 +102,26 @@ def download_pdf(pdf_url: str, output_dir: str, recipe_url: str) -> str | None:
 
 
 def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
-    """Orchestre le crawl complet : recupere les liens et telecharge tous les PDFs."""
-    logger.info("Starting crawl of viandesuisse.ch")
+    """Orchestre le crawl : recupere les liens, skip les PDFs existants, telecharge jusqu'a `limit` nouveaux."""
+    logger.info("Starting crawl of viandesuisse.ch (limit=%s)", limit)
 
     recipe_links = get_recipe_links()
-    if limit is not None:
-        recipe_links = recipe_links[:limit]
-    logger.info("Starting download of %d PDFs", len(recipe_links))
 
-    for i, recipe_url in enumerate(recipe_links, 1):
-        logger.info("Processing recipe %d/%d: %s", i, len(recipe_links), recipe_url)
+    # Keep only recipes not yet downloaded
+    pending = []
+    for recipe_url in recipe_links:
+        slug = recipe_url.rstrip("/").split("/")[-1]
+        if not (Path(output_dir) / f"viandesuisse_{slug}.pdf").exists():
+            pending.append(recipe_url)
+
+    logger.info("%d recipes pending (out of %d total)", len(pending), len(recipe_links))
+
+    if limit is not None:
+        pending = pending[:limit]
+
+    logger.info("Starting download of %d PDFs", len(pending))
+    for i, recipe_url in enumerate(pending, 1):
+        logger.info("Processing recipe %d/%d: %s", i, len(pending), recipe_url)
         try:
             time.sleep(1)
             pdf_url = get_pdf_url(recipe_url)

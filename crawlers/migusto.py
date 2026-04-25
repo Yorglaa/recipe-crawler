@@ -38,13 +38,11 @@ def _parse_iso_duration(iso: str) -> str:
     return f"{minutes} min."
 
 
-def get_recipe_slugs(limit: int | None = None) -> list[str]:
-    """POST pagination on /.rest/recipes/v1, returns list of recipe slugs."""
-    slugs: list[str] = []
+def _iter_recipe_slugs():
+    """Generator yielding all recipe slugs via paginated API, one at a time."""
     offset = 0
-
     while True:
-        logger.info("Fetching recipe list offset=%d (collected=%d)", offset, len(slugs))
+        logger.info("Fetching recipe list offset=%d", offset)
         response = requests.post(
             API_URL,
             json={
@@ -66,23 +64,28 @@ def get_recipe_slugs(limit: int | None = None) -> list[str]:
         recipes = data.get("recipes", [])
         if not recipes:
             logger.info("No more recipes at offset=%d", offset)
-            break
+            return
 
         for recipe in recipes:
-            slugs.append(recipe["slug"])
-            if limit is not None and len(slugs) >= limit:
-                logger.info("Limit=%d reached, stopping slug fetch", limit)
-                return slugs
+            yield recipe["slug"]
 
         total = data.get("total", 0)
-        logger.info("Slugs collected: %d / %d", len(slugs), total)
+        logger.info("Slugs yielded up to offset=%d / %d total", offset + len(recipes), total)
 
         if offset + _PAGE_SIZE >= total:
-            break
+            return
 
         offset += _PAGE_SIZE
         time.sleep(1)
 
+
+def get_recipe_slugs(limit: int | None = None) -> list[str]:
+    """Return up to `limit` recipe slugs (all if None). Used mainly for tests."""
+    slugs: list[str] = []
+    for slug in _iter_recipe_slugs():
+        slugs.append(slug)
+        if limit is not None and len(slugs) >= limit:
+            break
     return slugs
 
 
@@ -259,14 +262,17 @@ def generate_pdf(recipe_data: dict, output_dir: str) -> str | None:
 
 
 def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
-    """Fetch all slugs, retrieve each recipe JSON-LD, generate PDFs."""
+    """Fetch recipes lazily, skip already-downloaded PDFs, stop after `limit` new ones."""
     logger.info("Starting Migusto crawl (limit=%s, output=%s)", limit, output_dir)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    slugs = get_recipe_slugs(limit=limit)
-    logger.info("Total slugs to process: %d", len(slugs))
+    new_count = 0
+    for slug in _iter_recipe_slugs():
+        filename = f"migusto_{slug}.pdf"
+        if (Path(output_dir) / filename).exists():
+            logger.debug("Already have %s, skipping", filename)
+            continue
 
-    for i, slug in enumerate(slugs, 1):
-        logger.info("Processing %d/%d: %s", i, len(slugs), slug)
         try:
             data = get_recipe_data(slug)
             if not data:
@@ -275,10 +281,16 @@ def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
                 continue
             data["slug"] = slug
             generate_pdf(data, output_dir)
+            new_count += 1
         except requests.RequestException as e:
             logger.error("Network error for %s: %s", slug, e)
         except Exception as e:
             logger.error("Unexpected error for %s: %s", slug, e)
+
+        if limit is not None and new_count >= limit:
+            logger.info("Limit=%d new recipes reached, stopping", limit)
+            break
+
         time.sleep(1)
 
-    logger.info("Crawl complete: %d recipes processed", len(slugs))
+    logger.info("Crawl complete: %d new recipes downloaded", new_count)

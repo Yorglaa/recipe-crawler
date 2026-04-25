@@ -16,7 +16,7 @@ _POST_RE = re.compile(r"^/fr/posts/(\d+)$")
 
 
 def get_recipe_links() -> list[str]:
-    """Charge la page de liste, clique 'voir plus' jusqu'a epuisement, retourne les URLs recettes."""
+    """Charge la page de liste, clique voir plus jusqu'a epuisement, retourne les URLs recettes."""
     links: list[str] = []
     seen: set[str] = set()
 
@@ -33,7 +33,6 @@ def get_recipe_links() -> list[str]:
                     seen.add(href)
                     links.append("https://www.qoqa.ch" + href)
 
-            # Chercher le bouton "voir plus" / "load more"
             btn = page.query_selector(
                 '[data-testid="load-more-button"], '
                 'button:has-text("voir plus"), '
@@ -41,10 +40,10 @@ def get_recipe_links() -> list[str]:
                 'button:has-text("Load more")'
             )
             if btn is None:
-                logger.info("No more 'voir plus' button — done")
+                logger.info("No more voir plus button -- done")
                 break
 
-            logger.info("Clicking 'voir plus' (%d links so far)...", len(links))
+            logger.info("Clicking voir plus (%d links so far)...", len(links))
             btn.click()
             page.wait_for_load_state("networkidle", timeout=15000)
             time.sleep(1)
@@ -89,10 +88,24 @@ def download_pdf(pdf_url: str, output_dir: str, recipe_url: str) -> str | None:
 
 
 def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
+    """Recupere les liens, skip les PDFs existants, telecharge jusqu'a `limit` nouveaux."""
+    logger.info("Starting Qoqa crawl (limit=%s)", limit)
+
     recipe_links = get_recipe_links()
-    if limit is not None:
-        recipe_links = recipe_links[:limit]
+
+    # Keep only recipes not yet downloaded
+    pending = []
     for recipe_url in recipe_links:
+        m = _POST_RE.search(recipe_url.replace("https://www.qoqa.ch", ""))
+        if m and not (Path(output_dir) / f"qoqa_{m.group(1)}.pdf").exists():
+            pending.append(recipe_url)
+
+    logger.info("%d recipes pending (out of %d total)", len(pending), len(recipe_links))
+
+    if limit is not None:
+        pending = pending[:limit]
+
+    for recipe_url in pending:
         try:
             pdf_url = get_pdf_url(recipe_url)
             if not pdf_url:
