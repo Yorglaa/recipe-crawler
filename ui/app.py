@@ -41,7 +41,7 @@ def _status() -> str:
 
 
 def _stream(cmd: list[str]):
-    """Lance un subprocess et yielde les logs ligne par ligne."""
+    """Lance un subprocess et yielde les logs accumulés ligne par ligne."""
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     proc = subprocess.Popen(
         cmd,
@@ -58,7 +58,7 @@ def _stream(cmd: list[str]):
         output += line
         yield output
     proc.wait()
-    yield output + f"\n[terminé — code {proc.returncode}]"
+    yield output + f"\n[terminé — code {proc.returncode}]\n"
 
 
 def run_crawl(sites: list[str], limit: int, renew: bool, do_index: bool):
@@ -73,14 +73,45 @@ def run_crawl(sites: list[str], limit: int, renew: bool, do_index: bool):
     yield from _stream(cmd)
 
 
-def run_index(sites: list[str], limit: int):
+def run_index(sites: list[str], limit: int, loop: bool):
     if not sites:
         yield "Aucun site sélectionné."
         return
+
+    batch_limit = int(limit)
     cmd = [sys.executable, "index_recipes.py", "--sites"] + sites
-    if int(limit) > 0:
-        cmd += ["--limit", str(int(limit))]
-    yield from _stream(cmd)
+    if batch_limit > 0:
+        cmd += ["--limit", str(batch_limit)]
+
+    if not loop or batch_limit == 0:
+        yield from _stream(cmd)
+        return
+
+    # Mode boucle : lots successifs jusqu'à 0 nouvelles recettes
+    all_output = ""
+    batch = 0
+    while True:
+        batch += 1
+        sep = f"{'='*44}\n Lot {batch}\n{'='*44}\n"
+        all_output += sep
+        yield all_output
+
+        before = count_recipes()
+        batch_output = ""
+        for chunk in _stream(cmd):
+            batch_output = chunk
+            yield all_output + batch_output
+        all_output += batch_output
+
+        new = count_recipes() - before
+        summary = f"→ Lot {batch} : {new} nouvelles recettes  (total DB : {count_recipes()})\n"
+        all_output += summary
+        yield all_output
+
+        if new == 0:
+            all_output += "\n✓ Indexation complète — aucune nouvelle recette trouvée."
+            yield all_output
+            break
 
 
 def build_app() -> gr.Blocks:
@@ -143,12 +174,16 @@ def build_app() -> gr.Blocks:
                         value=["viandesuisse", "migusto", "qoqa"],
                         label="Sites",
                     )
-                    index_limit = gr.Number(
-                        value=0, label="Limite (0 = tout)",
-                        precision=0, minimum=0,
-                    )
+                    with gr.Column():
+                        index_limit = gr.Number(
+                            value=200, label="Taille du lot (0 = tout en une passe)",
+                            precision=0, minimum=0,
+                        )
+                        index_loop = gr.Checkbox(
+                            label="Boucler jusqu'à complet  (lots successifs)", value=False
+                        )
                 index_btn = gr.Button("Indexer", variant="secondary")
-                index_log = gr.Textbox(label="Logs indexation", lines=20, max_lines=30, interactive=False)
+                index_log = gr.Textbox(label="Logs indexation", lines=25, max_lines=40, interactive=False)
 
                 # Events ──────────────────────────────────────────────────────
                 refresh_btn.click(fn=_status, outputs=status_box)
@@ -161,7 +196,7 @@ def build_app() -> gr.Blocks:
 
                 index_btn.click(
                     fn=run_index,
-                    inputs=[index_sites, index_limit],
+                    inputs=[index_sites, index_limit, index_loop],
                     outputs=index_log,
                 ).then(fn=_status, outputs=status_box)
 
