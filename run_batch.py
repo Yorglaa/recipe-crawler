@@ -26,12 +26,14 @@ def _count_pdfs(directory: str) -> int:
     return len(list(p.glob("*.pdf"))) if p.exists() else 0
 
 
-def _run_batch(site: str, batch_size: int, skip_upload: bool) -> int:
+def _run_batch(site: str, batch_size: int, skip_upload: bool, renew: bool) -> int:
     """Run one batch via main.py; return number of new PDFs downloaded."""
     before = _count_pdfs(_PDF_DIRS[site])
     cmd = [sys.executable, "main.py", "--sites", site, "--limit", str(batch_size)]
     if skip_upload:
         cmd.append("--skip-upload")
+    if renew:
+        cmd.append("--renew")
     result = subprocess.run(cmd)
     if result.returncode != 0:
         logger.warning("main.py exited with code %d for site %s", result.returncode, site)
@@ -39,22 +41,25 @@ def _run_batch(site: str, batch_size: int, skip_upload: bool) -> int:
     return after - before
 
 
-def _crawl_site(site: str, batch_size: int, delay: int, skip_upload: bool) -> int:
+def _crawl_site(site: str, batch_size: int, delay: int, skip_upload: bool, renew: bool) -> int:
     """Run batches for one site until exhausted. Returns total new PDFs."""
     total = 0
     batch = 0
+    first_batch = True
     while True:
         batch += 1
         logger.info("=" * 60)
         logger.info("Site: %s | batch %d | batch-size %d", site, batch, batch_size)
         logger.info("=" * 60)
 
-        new = _run_batch(site, batch_size, skip_upload)
+        # --renew only on first batch to refresh cache once, not on every batch
+        new = _run_batch(site, batch_size, skip_upload, renew=renew and first_batch)
+        first_batch = False
         total += new
         logger.info("Batch %d done: +%d new PDFs (running total for %s: %d)", batch, new, site, total)
 
         if new == 0:
-            logger.info("Site %s is complete — %d PDFs downloaded in total", site, total)
+            logger.info("Site %s is complete -- %d PDFs downloaded in total", site, total)
             break
 
         logger.info("Waiting %ds before next batch...", delay)
@@ -97,6 +102,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Download PDFs only, skip AnythingLLM upload",
     )
+    parser.add_argument(
+        "--renew",
+        action="store_true",
+        help="Re-fetch link/slug list from source on first batch (ignores cache)",
+    )
     return parser.parse_args()
 
 
@@ -111,13 +121,13 @@ def main() -> None:
     sites = _SITES if "all" in args.sites else args.sites
 
     logger.info(
-        "Production crawl starting — sites: %s | batch-size: %d | delay: %ds | skip-upload: %s",
-        sites, args.batch_size, args.delay, args.skip_upload,
+        "Production crawl starting -- sites: %s | batch-size: %d | delay: %ds | renew: %s",
+        sites, args.batch_size, args.delay, args.renew,
     )
 
     grand_total = 0
     for site in sites:
-        n = _crawl_site(site, args.batch_size, args.delay, args.skip_upload)
+        n = _crawl_site(site, args.batch_size, args.delay, args.skip_upload, args.renew)
         grand_total += n
 
     logger.info("All sites complete. Grand total: %d new PDFs downloaded.", grand_total)

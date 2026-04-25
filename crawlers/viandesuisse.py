@@ -101,13 +101,13 @@ def download_pdf(pdf_url: str, output_dir: str, recipe_url: str) -> str | None:
     return output_path
 
 
-def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
-    """Orchestre le crawl : recupere les liens, skip les PDFs existants, telecharge jusqu'a `limit` nouveaux."""
+def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None, renew: bool = False) -> None:
+    """Orchestre le crawl : recupere les liens, skip les PDFs existants, telecharge jusqu'a `limit` nouveaux.
+    Le parametre renew est accepte pour compatibilite mais ignore (site trop petit pour necessiter un cache)."""
     logger.info("Starting crawl of viandesuisse.ch (limit=%s)", limit)
 
     recipe_links = get_recipe_links()
 
-    # Keep only recipes not yet downloaded
     pending = []
     for recipe_url in recipe_links:
         slug = recipe_url.rstrip("/").split("/")[-1]

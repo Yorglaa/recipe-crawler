@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://migusto.migros.ch"
 API_URL = "https://migusto.migros.ch/.rest/recipes/v1"
 PDF_OUTPUT_DIR = "./pdfs/migusto"
+_CACHE_FILE = "./cache/migusto_slugs.json"
 _FILTER_UUID = "69656a62-ce86-42d3-a821-f3faeccb631c"
 _PAGE_SIZE = 24
 
@@ -79,14 +80,24 @@ def _iter_recipe_slugs():
         time.sleep(1)
 
 
-def get_recipe_slugs(limit: int | None = None) -> list[str]:
-    """Return up to `limit` recipe slugs (all if None). Used mainly for tests."""
-    slugs: list[str] = []
-    for slug in _iter_recipe_slugs():
-        slugs.append(slug)
-        if limit is not None and len(slugs) >= limit:
-            break
+def _load_or_fetch_slugs(renew: bool) -> list[str]:
+    """Return full slug list from local cache, fetching from API if needed."""
+    cache = Path(_CACHE_FILE)
+    if not renew and cache.exists():
+        logger.info("Loading %d slugs from cache: %s", len(slugs := json.loads(cache.read_text("utf-8"))), _CACHE_FILE)
+        return slugs
+    logger.info("Fetching all slugs from API%s", " (--renew)" if renew else " (no cache)")
+    slugs = list(_iter_recipe_slugs())
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(slugs, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Cached %d slugs -> %s", len(slugs), _CACHE_FILE)
     return slugs
+
+
+def get_recipe_slugs(limit: int | None = None, renew: bool = False) -> list[str]:
+    """Return up to `limit` recipe slugs (all if None). Uses cache when available."""
+    slugs = _load_or_fetch_slugs(renew)
+    return slugs[:limit] if limit is not None else slugs
 
 
 def get_recipe_data(slug: str) -> dict | None:
@@ -261,13 +272,15 @@ def generate_pdf(recipe_data: dict, output_dir: str) -> str | None:
     return str(output_path)
 
 
-def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
-    """Fetch recipes lazily, skip already-downloaded PDFs, stop after `limit` new ones."""
-    logger.info("Starting Migusto crawl (limit=%s, output=%s)", limit, output_dir)
+def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None, renew: bool = False) -> None:
+    """Fetch recipes from cache (or API if no cache / --renew), skip existing PDFs, stop after `limit` new ones."""
+    logger.info("Starting Migusto crawl (limit=%s, renew=%s, output=%s)", limit, renew, output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    all_slugs = _load_or_fetch_slugs(renew)
+
     new_count = 0
-    for slug in _iter_recipe_slugs():
+    for slug in all_slugs:
         filename = f"migusto_{slug}.pdf"
         if (Path(output_dir) / filename).exists():
             logger.debug("Already have %s, skipping", filename)

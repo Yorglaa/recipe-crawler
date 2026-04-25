@@ -47,3 +47,6 @@ config.py
 # Claude Code
 .claude/
 memory/
+
+# Link/slug cache
+cache/

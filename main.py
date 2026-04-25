@@ -46,19 +46,26 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip AnythingLLM upload after crawling",
     )
+    parser.add_argument(
+        "--renew",
+        action="store_true",
+        help="Ignore local link/slug cache and re-fetch from source (migusto, qoqa)",
+    )
     return parser.parse_args()
 
 
-def run_crawlers(sites: list[str], limit: int | None) -> list[tuple[str, list[Path]]]:
+def run_crawlers(
+    sites: list[str], limit: int | None, renew: bool = False
+) -> list[tuple[str, list[Path]]]:
     """Run each crawler; return list of (output_dir, new_pdf_paths) per site."""
     results: list[tuple[str, list[Path]]] = []
     for site in sites:
         out_dir = _OUTPUT_DIRS[site]
         before = set(Path(out_dir).glob("*.pdf")) if Path(out_dir).exists() else set()
-        logger.info("=== Crawling %s (limit=%s) -> %s ===", site, limit, out_dir)
+        logger.info("=== Crawling %s (limit=%s, renew=%s) -> %s ===", site, limit, renew, out_dir)
         try:
             mod = importlib.import_module(_SITES[site])
-            mod.crawl(output_dir=out_dir, limit=limit)
+            mod.crawl(output_dir=out_dir, limit=limit, renew=renew)
         except Exception as exc:
             logger.error("Crawler %s failed: %s", site, exc, exc_info=True)
         after = set(Path(out_dir).glob("*.pdf")) if Path(out_dir).exists() else set()
@@ -93,9 +100,12 @@ def main() -> None:
 
     args = _parse_args()
     sites = list(_SITES) if "all" in args.sites else args.sites
-    logger.info("Sites: %s | limit=%s | skip-upload=%s", sites, args.limit, args.skip_upload)
+    logger.info(
+        "Sites: %s | limit=%s | skip-upload=%s | renew=%s",
+        sites, args.limit, args.skip_upload, args.renew,
+    )
 
-    results = run_crawlers(sites, args.limit)
+    results = run_crawlers(sites, args.limit, renew=args.renew)
 
     if args.skip_upload:
         logger.info("--skip-upload set, skipping AnythingLLM upload")

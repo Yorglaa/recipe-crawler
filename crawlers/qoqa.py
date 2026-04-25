@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import time
@@ -10,13 +11,14 @@ logger = logging.getLogger(__name__)
 
 LIST_URL = "https://www.qoqa.ch/fr/posts?kind=recipe"
 PDF_OUTPUT_DIR = "./pdfs/qoqa"
+_CACHE_FILE = "./cache/qoqa_links.json"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 _POST_RE = re.compile(r"^/fr/posts/(\d+)$")
 
 
-def get_recipe_links() -> list[str]:
-    """Charge la page de liste, clique voir plus jusqu'a epuisement, retourne les URLs recettes."""
+def _fetch_recipe_links() -> list[str]:
+    """Charge la page de liste via Playwright, clique voir plus jusqu'a epuisement."""
     links: list[str] = []
     seen: set[str] = set()
 
@@ -54,6 +56,21 @@ def get_recipe_links() -> list[str]:
     return links
 
 
+def get_recipe_links(renew: bool = False) -> list[str]:
+    """Return recipe links from local cache, using Playwright if needed."""
+    cache = Path(_CACHE_FILE)
+    if not renew and cache.exists():
+        links = json.loads(cache.read_text("utf-8"))
+        logger.info("Loaded %d recipe links from cache: %s", len(links), _CACHE_FILE)
+        return links
+    logger.info("Fetching recipe links with Playwright%s", " (--renew)" if renew else " (no cache)")
+    links = _fetch_recipe_links()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(links, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Cached %d links -> %s", len(links), _CACHE_FILE)
+    return links
+
+
 def get_pdf_url(recipe_url: str) -> str | None:
     """Derive l'URL du PDF directement depuis l'ID numerique de la recette."""
     m = _POST_RE.search(recipe_url.replace("https://www.qoqa.ch", ""))
@@ -87,13 +104,12 @@ def download_pdf(pdf_url: str, output_dir: str, recipe_url: str) -> str | None:
     return str(output_path)
 
 
-def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None) -> None:
-    """Recupere les liens, skip les PDFs existants, telecharge jusqu'a `limit` nouveaux."""
-    logger.info("Starting Qoqa crawl (limit=%s)", limit)
+def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None, renew: bool = False) -> None:
+    """Recupere les liens (cache ou Playwright), skip les PDFs existants, telecharge jusqu'a `limit` nouveaux."""
+    logger.info("Starting Qoqa crawl (limit=%s, renew=%s)", limit, renew)
 
-    recipe_links = get_recipe_links()
+    recipe_links = get_recipe_links(renew=renew)
 
-    # Keep only recipes not yet downloaded
     pending = []
     for recipe_url in recipe_links:
         m = _POST_RE.search(recipe_url.replace("https://www.qoqa.ch", ""))
