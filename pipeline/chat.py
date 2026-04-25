@@ -18,10 +18,12 @@ import config
 from pipeline import database, embeddings
 
 _client: genai.Client | None = None
+_last_recipe_ids: list[int] = []
 
 _SYSTEM_PROMPT = """Tu es un assistant culinaire francophone specialise dans les recettes de cuisine.
 Tu reponds uniquement en francais, de facon concise et chaleureuse.
 Tu t'appuies exclusivement sur les recettes fournies dans le contexte pour repondre.
+Quand plusieurs recettes correspondent a la demande, liste-les toutes avec leur titre et duree.
 Si aucune recette pertinente n'est disponible, dis-le honnetement et propose une piste generale.
 Ne mentionne jamais les noms de fichiers PDF ni les identifiants techniques.
 N'hesite pas a interagir avec l'utilisateur : pose des questions de precision si la demande est vague
@@ -60,27 +62,42 @@ def classify_query(query: str) -> str:
     return "rag"
 
 
+def _extract_main_ingredient(normalized_query: str) -> str | None:
+    m = re.search(
+        r"(?:avec\s+(?:de\s+l[' ]|du\s+|de\s+la\s+|des\s+)|"
+        r"a\s+base\s+de\s+|contenant\s+|recette\s+(?:de\s+|au?\s+|aux\s+))"
+        r"([a-z]{3,})",
+        normalized_query,
+    )
+    return m.group(1) if m else None
+
+
 def search_recipes(query: str, n_results: int = 6) -> list[dict]:
+    global _last_recipe_ids
     route = classify_query(query)
     q = _normalize(query)
+    results: list[dict] = []
 
     if route == "sql_duration":
         minutes = _extract_minutes(query)
         if minutes:
             rows = database.search_by_duration(minutes)
             if rows:
-                return rows[:n_results]
-        return _rag(query, n_results)
+                results = rows[:n_results]
+        if not results:
+            results = _rag(query, n_results)
 
-    if route == "sql_category":
+    elif route == "sql_category":
         for kw in _CATEGORY_KEYWORDS:
             if kw in q:
                 rows = database.search_by_category(kw)
                 if rows:
-                    return rows[:n_results]
-        return _rag(query, n_results)
+                    results = rows[:n_results]
+                    break
+        if not results:
+            results = _rag(query, n_results)
 
-    if route == "hybrid":
+    elif route == "hybrid":
         minutes = _extract_minutes(query)
         sql_rows = database.search_by_duration(minutes) if minutes else []
         rag_rows = _rag(query, n_results)
@@ -90,9 +107,27 @@ def search_recipes(query: str, n_results: int = 6) -> list[dict]:
             if r["id"] not in seen:
                 merged.append(r)
                 seen.add(r["id"])
-        return merged[:n_results]
+        results = merged[:n_results]
 
-    return _rag(query, n_results)
+    else:  # rag — supplement with SQL ingredient search
+        rag_rows = _rag(query, n_results)
+        ingredient = _extract_main_ingredient(q)
+        if ingredient:
+            ing_rows = database.search_by_ingredient(ingredient)
+            seen = {r["id"] for r in rag_rows}
+            extra = [r for r in ing_rows if r["id"] not in seen]
+            results = rag_rows + extra
+        else:
+            results = rag_rows
+
+    # Always include previously cited recipes (support follow-up questions)
+    if _last_recipe_ids:
+        seen_ids = {r["id"] for r in results}
+        prev = database.get_recipes_by_ids(_last_recipe_ids)
+        results = results + [r for r in prev if r["id"] not in seen_ids]
+
+    _last_recipe_ids = [r["id"] for r in results[:n_results]]
+    return results
 
 
 def _rag(query: str, n_results: int) -> list[dict]:
@@ -150,8 +185,11 @@ def chat(message: str, history: list[dict]) -> str:
     contents: list[types.Content] = []
     for turn in history:
         role = "user" if turn["role"] == "user" else "model"
+        content = turn["content"]
+        if isinstance(content, list):
+            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
         contents.append(
-            types.Content(role=role, parts=[types.Part(text=turn["content"])])
+            types.Content(role=role, parts=[types.Part(text=content)])
         )
     contents.append(
         types.Content(role="user", parts=[types.Part(text=user_message_with_context)])

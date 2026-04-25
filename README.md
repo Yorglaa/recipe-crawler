@@ -1,4 +1,4 @@
-# recipe-crawler
+﻿# recipe-crawler
 
 Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 
@@ -50,13 +50,15 @@ playwright install chromium
 
 ## Configuration
 
-Copy `config.example.py` to `config.py` and fill in your Gemini API key:
+Create a `.env` file at the root of the project with your Gemini API key:
 
-```python
-GEMINI_API_KEY = "your-key-here"
+```
+GEMINI_API_KEY=your-key-here
 ```
 
-All other values have sensible defaults. `config.py` is gitignored — never commit it.
+`config.py` loads this file automatically via `python-dotenv`. The `.env` file is gitignored — never commit it.
+
+All other settings (`CHROMA_DB_PATH`, `SQLITE_DB_PATH`, `EMBEDDING_MODEL`, `GEMINI_MODEL`) are defined in `config.py` with sensible defaults.
 
 ---
 
@@ -67,7 +69,7 @@ Crawling and indexing are independent operations.
 ### 1. Crawl — download PDFs
 
 ```
-python main.py [--sites SITE [SITE ...]] [--limit N] [--renew]
+python main.py [--sites SITE [SITE ...]] [--limit N] [--renew] [--index]
 ```
 
 | Option | Description |
@@ -75,7 +77,7 @@ python main.py [--sites SITE [SITE ...]] [--limit N] [--renew]
 | `--sites` | `viandesuisse`, `migusto`, `qoqa`, or `all` (default: `all`) |
 | `--limit N` | Download at most **N new** recipes per site |
 | `--renew` | Ignore local link/slug cache and re-fetch from source |
-| `--index` | Also run the indexer after crawling |
+| `--index` | Also run the indexer (SQLite + ChromaDB) after crawling |
 
 **Examples:**
 
@@ -93,10 +95,16 @@ python main.py --sites migusto --limit 50 --index
 ### 2. Index — build SQLite + ChromaDB
 
 ```
-python index_recipes.py [--sites SITE [SITE ...]] [--limit N]
+python index_recipes.py [--sites SITE [SITE ...]] [--limit N] [--sync-embeddings]
 ```
 
 Reads existing PDFs from disk, extracts metadata, and loads everything into SQLite and ChromaDB. Safe to re-run — already-indexed recipes are skipped.
+
+| Option | Description |
+|---|---|
+| `--sites` | Sites to index (default: all) |
+| `--limit N` | Index at most **N new** recipes per site |
+| `--sync-embeddings` | Add to ChromaDB any recipe already in SQLite but missing an embedding |
 
 ```bash
 # Index everything
@@ -104,11 +112,16 @@ python index_recipes.py
 
 # Index only the next 200 qoqa recipes
 python index_recipes.py --sites qoqa --limit 200
+
+# Fix a SQLite / ChromaDB mismatch without re-crawling
+python index_recipes.py --sync-embeddings
 ```
+
+> **Note:** If SQLite and ChromaDB counts diverge (e.g. after an interrupted indexation), `--sync-embeddings` iterates over all SQLite entries and upserts the missing ones into ChromaDB without touching the PDFs or re-parsing anything.
 
 ### 3. Chat — launch the Gradio interface
 
-**Via the desktop shortcut** (Windows): double-click **Assistant Recettes** — the browser opens automatically.
+**Via the desktop shortcut** (Windows): double-click **start_app.bat** — the browser opens automatically.
 
 **Or from the terminal:**
 
@@ -119,13 +132,27 @@ venv\Scripts\python.exe ui/app.py    # Windows
 
 The interface has two tabs:
 
-- **Chat** — ask questions in natural language; hybrid search (SQL for duration/category, ChromaDB for everything else)
-- **Admin** — manage crawling and indexing visually without touching the terminal:
-  - Launch a crawl batch per site with configurable limit and `--renew`
-  - Index PDFs in configurable batch sizes, with an optional loop until complete
-  - Live log streaming and status display
+#### Chat tab
 
-Both tabs have a **Fermer l'application** button that shuts down the server and closes the console.
+Ask questions in natural language. The query router selects between SQL (duration, category filters) and ChromaDB semantic search depending on the question.
+
+Examples:
+- *Quelque chose de cremeux avec du poulet*
+- *Toutes les recettes de moins de 30 minutes*
+- *Une bonne soupe reconfortante*
+
+#### Admin tab
+
+Manage crawling, indexing, and maintenance without touching the terminal. All operations stream live logs.
+
+| Section | What it does |
+|---|---|
+| **Status bar** | PDF counts per site · SQLite recipe count · ChromaDB embedding count |
+| **Crawling** | Launch a crawl batch for selected sites; configurable limit, `--renew`, optional post-crawl indexing |
+| **Indexation** | Index PDFs in configurable batch sizes; loop mode runs until no new recipes are found |
+| **Synchronisation** | Add ChromaDB embeddings for recipes already in SQLite but not yet vectorised |
+
+Both tabs have a **Fermer l'application** button that shuts down the server.
 
 ---
 
@@ -139,7 +166,7 @@ python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--
 
 | Option | Default | Description |
 |---|---|---|
-| `--sites` | `all` | Same choices as main.py |
+| `--sites` | `all` | Same choices as `main.py` |
 | `--batch-size N` | `50` | Recipes per batch |
 | `--delay SEC` | `30` | Seconds to wait between batches |
 | `--renew` | — | Re-fetch link/slug list on first batch |
@@ -157,7 +184,7 @@ python index_recipes.py
 ## Cache (migusto and qoqa)
 
 Collecting the full recipe list is expensive:
-- **migusto** requires ~330 paginated API calls to enumerate 7 950 slugs
+- **migusto** requires ~330 paginated API calls to enumerate ~7 950 slugs
 - **qoqa** requires a full Playwright session to click through "Voir plus"
 
 The list is cached locally as JSON after the first fetch.
@@ -182,10 +209,11 @@ cache/
 
 ```
 recipe-crawler/
-├── config.example.py       # Template — copy to config.py and fill in secrets
-├── config.py               # Local config (gitignored)
+├── .env                    # API key (gitignored — create manually)
+├── config.example.py       # Template showing all available settings
+├── config.py               # Active config, loads .env (gitignored)
 ├── main.py                 # Crawl PDFs (+ optional --index)
-├── index_recipes.py        # Standalone indexer: PDFs → SQLite + ChromaDB
+├── index_recipes.py        # Standalone indexer: PDFs -> SQLite + ChromaDB
 ├── run_batch.py            # Production runner: loops main.py until done
 ├── start_app.bat           # Windows launcher (uses venv automatically)
 │
@@ -195,8 +223,8 @@ recipe-crawler/
 │   └── qoqa.py             # qoqa.ch crawler (Playwright)
 │
 ├── pipeline/
-│   ├── database.py         # SQLite metadata store
-│   ├── embeddings.py       # ChromaDB vector store (offline, no HF network calls)
+│   ├── database.py         # SQLite metadata store (thread-safe)
+│   ├── embeddings.py       # ChromaDB vector store (offline, HF_HUB_OFFLINE=1)
 │   └── chat.py             # Query router + Gemini chat
 │
 ├── ui/
@@ -217,10 +245,16 @@ recipe-crawler/
 ## Crawler details
 
 ### viandesuisse.ch
-Scrapes the paginated recipe list with BeautifulSoup, then fetches each recipe page to find the native print-PDF link (`/print/pdf/node/…`). Downloads the PDF directly.
+Scrapes the paginated recipe list with BeautifulSoup, then fetches each recipe page to find the native print-PDF link (`/print/pdf/node/...`). Downloads the PDF directly.
 
 ### migusto.migros.ch
 Uses the internal REST API (`POST /.rest/recipes/v1`) to paginate through all ~7 950 recipes and collect slugs. For each slug, fetches the HTML page and extracts the `schema.org/Recipe` JSON-LD block (name, ingredients, steps, nutrition). Generates a formatted PDF with weasyprint and saves a `.json` sidecar alongside it for fast indexing.
 
 ### qoqa.ch
 Uses Playwright (headless Chromium) to load the JS-rendered recipe list and click "Voir plus" until all links are collected. PDFs are downloaded directly from `https://download.qoqa.ch/fr/posts/{id}.pdf`.
+
+---
+
+## Embedding model
+
+The semantic search uses `all-MiniLM-L6-v2` (sentence-transformers) running fully offline. The model is downloaded once on first run to the default HuggingFace cache (`~/.cache/huggingface/`). Afterwards, `HF_HUB_OFFLINE=1` is set automatically so the app never makes network calls to HuggingFace.

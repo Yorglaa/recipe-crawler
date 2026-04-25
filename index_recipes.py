@@ -17,8 +17,8 @@ from pathlib import Path
 import pdfplumber
 
 import config
-from pipeline.database import init_db, insert_recipe, recipe_exists
-from pipeline.embeddings import init_chroma, add_recipe
+from pipeline.database import init_db, insert_recipe, recipe_exists, get_all_recipes
+from pipeline.embeddings import init_chroma, add_recipe, recipe_exists as embed_exists
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,39 @@ _PARSERS = {
 }
 
 
+
+def sync_embeddings() -> int:
+    """Upserts into ChromaDB all recipes present in SQLite but missing in ChromaDB."""
+    recipes = get_all_recipes()
+    synced = 0
+    for r in recipes:
+        rid = r["id"]
+        if embed_exists(rid):
+            continue
+        ingredients = r.get("ingredients") or []
+        if isinstance(ingredients, str):
+            import json as _json
+            try:
+                ingredients = _json.loads(ingredients)
+            except Exception:
+                ingredients = []
+        add_recipe(
+            recipe_id=rid,
+            title=r["title"],
+            description=r.get("description"),
+            ingredients=ingredients,
+            metadata={
+                "site":             r["site"],
+                "duration_minutes": r.get("duration_minutes") or 0,
+                "category":         r.get("category") or "",
+            },
+        )
+        synced += 1
+        if synced % 100 == 0:
+            logger.info("  synced %d so far...", synced)
+    return synced
+
+
 def index_site(site: str, limit: int | None = None) -> int:
     pdf_dir = Path(PDF_DIRS[site])
     if not pdf_dir.exists():
@@ -234,11 +267,22 @@ def main() -> None:
         default=["all"], metavar="SITE",
     )
     parser.add_argument("--limit", type=int, default=None, metavar="N")
+    parser.add_argument(
+        "--sync-embeddings", action="store_true",
+        help="Sync SQLite recipes missing from ChromaDB without re-crawling",
+    )
     args = parser.parse_args()
-    sites = list(PDF_DIRS) if "all" in args.sites else args.sites
 
     init_db()
     init_chroma()
+
+    if args.sync_embeddings:
+        logger.info("=== Syncing embeddings (SQLite -> ChromaDB) ===")
+        n = sync_embeddings()
+        logger.info("Done - %d embeddings added", n)
+        return
+
+    sites = list(PDF_DIRS) if "all" in args.sites else args.sites
 
     total = 0
     for site in sites:

@@ -114,6 +114,12 @@ def run_index(sites: list[str], limit: int, loop: bool):
             break
 
 
+
+def run_sync_embeddings():
+    cmd = [sys.executable, "index_recipes.py", "--sync-embeddings"]
+    yield from _stream(cmd)
+
+
 _CSS = """
 body, .gradio-container { background: #f2ede4 !important; }
 .block, .panel { background: #faf7f2 !important; }
@@ -138,8 +144,28 @@ _THEME = gr.themes.Soft(
 )
 
 
+_JS = """
+() => {
+    setTimeout(() => {
+        const observer = new MutationObserver(mutations => {
+            for (const m of mutations) {
+                if (m.attributeName === "disabled" &&
+                    m.target.matches("button") &&
+                    !m.target.hasAttribute("disabled")) {
+                    const ta = document.querySelector(".chat-interface textarea, .chatbot ~ div textarea");
+                    if (ta) ta.focus();
+                }
+            }
+        });
+        const root = document.querySelector(".gradio-container");
+        if (root) observer.observe(root, {attributes: true, subtree: true, attributeFilter: ["disabled"]});
+    }, 1500);
+}
+"""
+
+
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="Assistant Recettes") as demo:
+    with gr.Blocks(title="Assistant Recettes", js=_JS) as demo:
         with gr.Tabs():
 
             # ── Onglet Chat ───────────────────────────────────────────────────
@@ -156,6 +182,7 @@ def build_app() -> gr.Blocks:
                         placeholder="Ex : une recette rapide avec des restes de poulet...",
                         container=False,
                         submit_btn="Envoyer",
+                        lines=3,
                     ),
                     examples=[
                         "Quelque chose de cremeux avec du poulet",
@@ -214,6 +241,15 @@ def build_app() -> gr.Blocks:
                 index_btn = gr.Button("Indexer", variant="secondary")
                 index_log = gr.Textbox(label="Logs indexation", lines=25, max_lines=40, interactive=False)
 
+                # Sync embeddings ────────────────────────────────────────
+                gr.Markdown("---\n## Synchronisation des embeddings")
+                gr.Markdown(
+                    "Ajoute dans ChromaDB les recettes présentes en SQLite mais sans embedding. "
+                    "Utile si SQLite et ChromaDB sont désynchronisés."
+                )
+                sync_btn = gr.Button("Synchroniser", variant="secondary")
+                sync_log = gr.Textbox(label="Logs sync", lines=10, max_lines=20, interactive=False)
+
                 # Fermeture ──────────────────────────────────────────────────
                 gr.Markdown("---")
                 gr.Button("Fermer l'application", variant="stop").click(
@@ -233,6 +269,12 @@ def build_app() -> gr.Blocks:
                     fn=run_index,
                     inputs=[index_sites, index_limit, index_loop],
                     outputs=index_log,
+                ).then(fn=_status, outputs=status_box)
+
+                sync_btn.click(
+                    fn=run_sync_embeddings,
+                    inputs=[],
+                    outputs=sync_log,
                 ).then(fn=_status, outputs=status_box)
 
     return demo
