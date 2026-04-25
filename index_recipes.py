@@ -22,10 +22,11 @@ from pipeline.embeddings import init_chroma, add_recipe
 
 logger = logging.getLogger(__name__)
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
 PDF_DIRS = {
-    "viandesuisse": "./pdfs/viandesuisse",
-    "migusto":      "./pdfs/migusto",
-    "qoqa":         "./pdfs/qoqa",
+    "viandesuisse": str(_SCRIPT_DIR / "pdfs" / "viandesuisse"),
+    "migusto":      str(_SCRIPT_DIR / "pdfs" / "migusto"),
+    "qoqa":         str(_SCRIPT_DIR / "pdfs" / "qoqa"),
 }
 
 
@@ -188,6 +189,7 @@ def index_site(site: str, limit: int | None = None) -> int:
     indexed = 0
 
     for pdf_path in sorted(pdf_dir.glob("*.pdf")):
+        pdf_path = pdf_path.resolve()
         if limit is not None and indexed >= limit:
             break
         if recipe_exists(str(pdf_path)):
@@ -250,3 +252,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
