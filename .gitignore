@@ -43,3 +43,7 @@ playwright/.auth/
 
 # Config with secrets
 config.py
+
+# Claude Code
+.claude/
+memory/
