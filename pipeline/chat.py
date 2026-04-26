@@ -222,9 +222,9 @@ def _find_in_context(query: str) -> list[dict]:
         return by_title
 
     # 2) Overlap de mots-clés (> 3 caractères, sans mots de requête parasites)
-    q_words = {w for w in q_norm.split() if len(w) > 3 and w not in _DETAIL_STOPWORDS}
+    q_words = {w for w in re.split(r"[\s']+", q_norm) if len(w) > 3 and w not in _DETAIL_STOPWORDS}
     def _overlap(r: dict) -> int:
-        return len({w for w in _normalize(r["title"]).split() if len(w) > 3} & q_words)
+        return len({w for w in re.split(r"[\s']+", _normalize(r["title"])) if len(w) > 3} & q_words)
     scored = sorted(context_recipes, key=_overlap, reverse=True)
     top_score = _overlap(scored[0]) if scored else 0
     if top_score > 0:
@@ -265,7 +265,7 @@ def _extract_site(query: str) -> str | None:
 def _search_for_detail(query: str) -> list[dict]:
     """Recherche une recette par mots-clés du titre, pour les demandes de détail hors contexte."""
     q_norm = _normalize(query)
-    words = [w for w in q_norm.split() if len(w) > 4 and w not in _DETAIL_STOPWORDS]
+    words = [w for w in re.split(r"[\s']+", q_norm) if len(w) > 4 and w not in _DETAIL_STOPWORDS]
     if len(words) >= 2:
         results = database.search_by_title_keywords(words[:3])
         if results:
