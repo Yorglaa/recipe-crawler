@@ -273,6 +273,16 @@ def _search_for_detail(query: str) -> list[dict]:
     return search_recipes(query)
 
 
+def _extract_list_ref(message: str) -> int | None:
+    """Extrait un numero de reference a la liste precedente (1-based), ou None."""
+    if re.match(r"^\s*(\d{1,2})\s*$", message):
+        return int(re.match(r"^\s*(\d{1,2})\s*$", message).group(1))
+    m = re.search(r"(?:recette|num[eé]ro|n[o°]\.?)\s*(\d{1,2})", message, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def format_context(recipes: list[dict], detailed: bool = False) -> str:
     if not recipes:
         return "Aucune recette trouvee pour cette recherche."
@@ -302,7 +312,7 @@ def format_context(recipes: list[dict], detailed: bool = False) -> str:
 
 
 def chat(message: str, history: list[dict]) -> str:
-    global _client, _last_disambig_titles
+    global _client, _last_disambig_titles, _last_recipe_ids
     if _client is None:
         _client = genai.Client(api_key=config.GEMINI_API_KEY)
 
@@ -332,11 +342,31 @@ def chat(message: str, history: list[dict]) -> str:
                         history,
                     )
 
+    # Reference numerique a la liste precedente : "recette 12", "numero 3", etc.
+    if _last_recipe_ids:
+        ref = _extract_list_ref(message)
+        if ref is not None:
+            idx = ref - 1
+            if 0 <= idx < len(_last_recipe_ids):
+                recipe = database.get_recipe_by_id(_last_recipe_ids[idx])
+                if recipe:
+                    context = format_context([recipe], detailed=True)
+                    detail_instruction = (
+                        chr(10) + 'INSTRUCTION : Reproduis la recette complete telle qu' + chr(39) + 'elle apparait dans '
+                        'la section ' + chr(39) + '--- Recette complete ---' + chr(39) + ' : ingredients, quantites, durees, '
+                        'et toutes les etapes de preparation. Ne resume pas, ne saute rien.' + chr(10)
+                    )
+                    return _call_llm(
+                        'Recettes disponibles :' + chr(10) * 2 + context + chr(10) * 2 + detail_instruction
+                        + 'Question de l' + chr(39) + 'utilisateur : ' + message,
+                        history,
+                    )
+
     corrected = _spell_correct(message)
 
     site = _extract_site(corrected)
     if site:
-        site_recipes = database.search_by_site(site)
+        site_recipes = database.search_by_site(site, limit=200)
         _last_recipe_ids = [r['id'] for r in site_recipes]
         site_context = format_context(site_recipes[:20])
         sites = database.get_sites_summary()
@@ -408,20 +438,21 @@ def _call_groq(user_message_with_context: str, history: list[dict]) -> str:
     from groq import Groq
     client = Groq(api_key=config.GROQ_API_KEY)
     messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
-    for turn in history:
+    for turn in history[-4:]:
         role = "user" if turn["role"] == "user" else "assistant"
-        content = turn["content"]
-        if isinstance(content, list):
-            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
-        messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_message_with_context})
+        turn_content = turn["content"]
+        if isinstance(turn_content, list):
+            turn_content = " ".join(p.get("text", "") for p in turn_content if isinstance(p, dict))
+        messages.append({"role": role, "content": turn_content})
+    msg = user_message_with_context[:6000]
+    messages.append({"role": "user", "content": msg})
     response = client.chat.completions.create(
         model=config.GROQ_MODEL,
         messages=messages,
         temperature=0.7,
         max_tokens=2048,
     )
-    return "[fallback: " + config.GROQ_MODEL + "]\n\n" + response.choices[0].message.content
+    return "[fallback: " + config.GROQ_MODEL + "]" + chr(10) * 2 + response.choices[0].message.content
 
 
 def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
@@ -443,35 +474,28 @@ def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
         temperature=0.7,
         max_output_tokens=2048,
     )
-    try:
-        response = _client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=contents,
-            config=gen_config,
-        )
-        return response.text
-    except Exception as e:
-        code = getattr(e, "status_code", None) or getattr(e, "code", None)
-        if code == 429:
-            fallback = getattr(config, "GEMINI_FALLBACK_MODEL", None)
-            if fallback:
-                time.sleep(5)
-                try:
-                    response = _client.models.generate_content(
-                        model=fallback,
-                        contents=contents,
-                        config=gen_config,
-                    )
-                    return "[fallback: " + fallback + "]\n\n" + response.text
-                except Exception:
-                    pass
+    fallback = getattr(config, "GEMINI_FALLBACK_MODEL", None)
+    for model_name in ([config.GEMINI_MODEL] + ([fallback] if fallback else [])):
+        try:
+            response = _client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=gen_config,
+            )
+            prefix = "" if model_name == config.GEMINI_MODEL else ("[fallback: " + model_name + "]" + chr(10) * 2)
+            return prefix + response.text
+        except Exception as e:
+            print(f"[LLM] {model_name} failed: {e}")
+            if model_name != config.GEMINI_MODEL:
+                break
+            time.sleep(2)
 
     groq_key = getattr(config, "GROQ_API_KEY", "")
     groq_model = getattr(config, "GROQ_MODEL", "")
     if groq_key and groq_model:
         try:
             return _call_groq(user_message_with_context, history)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[LLM] Groq failed: {e}")
 
     return "⚠️ Tous les services IA sont indisponibles. Réessaie dans quelques minutes."
