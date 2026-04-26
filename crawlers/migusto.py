@@ -56,7 +56,7 @@ def _iter_recipe_slugs():
                 "ingredients": [],
                 "order": "relevance:DESC",
             },
-            headers={**HEADERS, "Content-Type": "application/json"},
+            headers={**HEADERS, "Content-Type": "application/json", "Expect": ""},
             timeout=15,
         )
         response.raise_for_status()
