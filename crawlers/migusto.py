@@ -299,10 +299,20 @@ def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None, renew: boo
     logger.info("Starting Migusto crawl (limit=%s, renew=%s, output=%s)", limit, renew, output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    all_slugs = _load_or_fetch_slugs(renew)
+    cache = Path(_CACHE_FILE)
+    if not renew and cache.exists():
+        all_slugs = json.loads(cache.read_text("utf-8"))
+        logger.info("Loaded %d slugs from cache", len(all_slugs))
+        slug_iter = iter(all_slugs)
+    elif limit is not None:
+        logger.info("No cache — fetching slugs lazily from API (limit=%d)", limit)
+        slug_iter = _iter_recipe_slugs()
+    else:
+        all_slugs = _load_or_fetch_slugs(renew)
+        slug_iter = iter(all_slugs)
 
     new_count = 0
-    for slug in all_slugs:
+    for slug in slug_iter:
         filename = f"migusto_{slug}.pdf"
         if (Path(output_dir) / filename).exists():
             logger.debug("Already have %s, skipping", filename)
