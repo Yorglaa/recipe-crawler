@@ -368,7 +368,7 @@ def chat(message: str, history: list[dict]) -> str:
     if site:
         site_recipes = database.search_by_site(site, limit=200)
         _last_recipe_ids = [r['id'] for r in site_recipes]
-        site_context = format_context(site_recipes[:20])
+        site_context = format_context(site_recipes[:50])
         sites = database.get_sites_summary()
         sites_str = 'Sources : ' + ', '.join(
             f"{s['site']} ({s['count']} recettes)" for s in sites
