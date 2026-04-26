@@ -18,6 +18,8 @@ from pipeline.database import init_db, count_recipes, get_all_recipes, delete_re
 from pipeline.embeddings import init_chroma, count as chroma_count
 
 _ROOT = Path(__file__).parent.parent
+_current_proc: subprocess.Popen | None = None
+_proc_lock = threading.Lock()
 _PDF_DIRS = {
     "viandesuisse": _ROOT / "pdfs" / "viandesuisse",
     "migusto":      _ROOT / "pdfs" / "migusto",
@@ -42,7 +44,8 @@ def _status() -> str:
 
 
 def _stream(cmd: list[str]):
-    """Lance un subprocess et yielde les logs accumulés ligne par ligne."""
+    global _current_proc
+    """Lance un subprocess et yielde les logs accumules ligne par ligne."""
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     proc = subprocess.Popen(
         cmd,
@@ -53,13 +56,22 @@ def _stream(cmd: list[str]):
         cwd=str(_ROOT),
         env=env,
     )
-    output = f"$ {' '.join(cmd)}\n\n"
+    with _proc_lock:
+        _current_proc = proc
+    output = f"$ {' '.join(cmd)}" + chr(10) * 2
     yield output
-    for line in proc.stdout:
-        output += line
-        yield output
+    try:
+        for line in proc.stdout:
+            output += line
+            yield output
+    except Exception:
+        pass
     proc.wait()
-    yield output + f"\n[terminé — code {proc.returncode}]\n"
+    with _proc_lock:
+        if _current_proc is proc:
+            _current_proc = None
+    status = "arrete" if (proc.returncode is not None and proc.returncode < 0) else f"code {proc.returncode}"
+    yield output + chr(10) + f"[termine â {status}]" + chr(10)
 
 
 def run_crawl(sites: list[str], limit: int, renew: bool, do_index: bool):
@@ -113,6 +125,16 @@ def run_index(sites: list[str], limit: int, loop: bool):
             all_output += "\n✓ Indexation complète — aucune nouvelle recette trouvée."
             yield all_output
             break
+
+
+def stop_process() -> str:
+    global _current_proc
+    with _proc_lock:
+        proc = _current_proc
+    if proc and proc.poll() is None:
+        proc.terminate()
+        return "⏹ Processus arrete."
+    return "Aucun processus en cours."
 
 
 def _shutdown() -> str:
@@ -274,7 +296,11 @@ def build_app() -> gr.Blocks:
                         crawl_renew = gr.Checkbox(label="--renew  (re-fetch la liste de slugs)", value=False)
                         crawl_index = gr.Checkbox(label="--index  (indexer après le crawl)", value=False)
                 crawl_btn = gr.Button("Lancer un lot", variant="primary")
-                crawl_log = gr.Textbox(label="Logs crawl", lines=20, max_lines=30, interactive=False)
+                with gr.Row():
+                    crawl_log = gr.Textbox(label="Logs crawl", lines=20, max_lines=30, interactive=False)
+                    with gr.Column(scale=0, min_width=140):
+                        stop_crawl_btn = gr.Button("⏹ Arreter", variant="stop", size="sm")
+                        stop_crawl_out = gr.Textbox(label="", interactive=False, lines=1, max_lines=1)
 
                 # Indexation ──────────────────────────────────────────────────
                 gr.Markdown("---\n## Indexation")
@@ -293,7 +319,11 @@ def build_app() -> gr.Blocks:
                             label="Boucler jusqu'à complet  (lots successifs)", value=False
                         )
                 index_btn = gr.Button("Indexer", variant="secondary")
-                index_log = gr.Textbox(label="Logs indexation", lines=25, max_lines=40, interactive=False)
+                with gr.Row():
+                    index_log = gr.Textbox(label="Logs indexation", lines=25, max_lines=40, interactive=False)
+                    with gr.Column(scale=0, min_width=140):
+                        stop_index_btn = gr.Button("⏹ Arreter", variant="stop", size="sm")
+                        stop_index_out = gr.Textbox(label="", interactive=False, lines=1, max_lines=1)
 
                 # Nettoyage orphelins ─────────────────────────────────────
                 gr.Markdown("---\n## Nettoyage")
@@ -337,6 +367,9 @@ def build_app() -> gr.Blocks:
                     inputs=[index_sites, index_limit, index_loop],
                     outputs=index_log,
                 ).then(fn=_status, outputs=status_box)
+
+                stop_crawl_btn.click(fn=stop_process, inputs=[], outputs=stop_crawl_out)
+                stop_index_btn.click(fn=stop_process, inputs=[], outputs=stop_index_out)
 
                 sync_btn.click(
                     fn=run_sync_embeddings,
