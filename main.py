@@ -65,7 +65,17 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
         datefmt="%H:%M:%S",
+        force=True,
     )
+
+    class _QuietFilter(logging.Filter):
+        _noisy = ("fontTools", "weasyprint")
+        def filter(self, record):
+            return record.levelno >= logging.WARNING or not record.name.startswith(self._noisy)
+
+    _f = _QuietFilter()
+    for _h in logging.root.handlers:
+        _h.addFilter(_f)
     logging.getLogger("fontTools").setLevel(logging.WARNING)
     logging.getLogger("weasyprint").setLevel(logging.WARNING)
 
