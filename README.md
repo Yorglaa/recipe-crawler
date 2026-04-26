@@ -134,12 +134,25 @@ The interface has two tabs:
 
 #### Chat tab
 
-Ask questions in natural language. The query router selects between SQL (duration, category filters) and ChromaDB semantic search depending on the question.
+Ask questions in natural language. The query router selects between SQL (duration/category filters), ChromaDB semantic search, or a combination, depending on the question.
 
 Examples:
 - *Quelque chose de cremeux avec du poulet*
 - *Toutes les recettes de moins de 30 minutes*
 - *Une bonne soupe reconfortante*
+- *Des recettes de bœuf*
+
+**Detail mode** — Once a recipe is listed, ask for full preparation steps in natural language:
+
+- *Détaille moi la salade russe*
+- *Donne moi la marche à suivre pour les boulettes de poulet au curry*
+- *Comment préparer le tartare à l'italienne ?*
+
+Detail mode works even after a **Nouvelle conversation** reset or when the recipe was mentioned in an earlier turn — the bot searches the full database by title keywords if the recipe is not in the current context.
+
+**Nouvelle conversation** resets the chat history and the recipe context, starting fresh without restarting the server.
+
+Both tabs have a **Fermer l'application** button that shuts down the server.
 
 #### Admin tab
 
@@ -150,9 +163,8 @@ Manage crawling, indexing, and maintenance without touching the terminal. All op
 | **Status bar** | PDF counts per site · SQLite recipe count · ChromaDB embedding count |
 | **Crawling** | Launch a crawl batch for selected sites; configurable limit, `--renew`, optional post-crawl indexing |
 | **Indexation** | Index PDFs in configurable batch sizes; loop mode runs until no new recipes are found |
+| **Nettoyage** | Delete DB + ChromaDB entries whose PDF no longer exists on disk |
 | **Synchronisation** | Add ChromaDB embeddings for recipes already in SQLite but not yet vectorised |
-
-Both tabs have a **Fermer l'application** button that shuts down the server.
 
 ---
 
@@ -258,3 +270,16 @@ Uses Playwright (headless Chromium) to load the JS-rendered recipe list and clic
 ## Embedding model
 
 The semantic search uses `all-MiniLM-L6-v2` (sentence-transformers) running fully offline. The model is downloaded once on first run to the default HuggingFace cache (`~/.cache/huggingface/`). Afterwards, `HF_HUB_OFFLINE=1` is set automatically so the app never makes network calls to HuggingFace.
+
+---
+
+## French text normalisation
+
+All text comparisons (query routing, ingredient search, detail-mode title matching) go through a shared `_normalize()` function that:
+
+- Converts typographic apostrophes (U+2019) to ASCII `'`
+- Expands ligatures before ASCII stripping: `œ` → `oe`, `æ` → `ae`
+- Strips diacritics via NFD decomposition + ASCII encode
+- Lowercases
+
+This ensures that `bœuf` / `boeuf` and `œuf` / `oeuf` are treated as identical by both the router and the SQL `LIKE` ingredient search (which also tries both forms).

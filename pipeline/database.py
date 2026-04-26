@@ -34,7 +34,8 @@ def init_db() -> None:
                 ingredients      TEXT,
                 duration_minutes INTEGER,
                 category         TEXT,
-                description      TEXT
+                description      TEXT,
+                full_text        TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_recipes_category
                 ON recipes (category);
@@ -43,6 +44,12 @@ def init_db() -> None:
                 WHERE duration_minutes IS NOT NULL;
         """)
         _conn().commit()
+        # Migration silencieuse pour les DBs existantes sans full_text
+        try:
+            _conn().execute("ALTER TABLE recipes ADD COLUMN full_text TEXT")
+            _conn().commit()
+        except Exception:
+            pass
 
 
 def insert_recipe(data: dict) -> int | None:
@@ -54,8 +61,8 @@ def insert_recipe(data: dict) -> int | None:
         cur = _conn().execute(
             """
             INSERT OR IGNORE INTO recipes
-                (title, site, pdf_path, ingredients, duration_minutes, category, description)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (title, site, pdf_path, ingredients, duration_minutes, category, description, full_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data["title"],
@@ -65,10 +72,27 @@ def insert_recipe(data: dict) -> int | None:
                 data.get("duration_minutes"),
                 data.get("category"),
                 data.get("description"),
+                data.get("full_text"),
             ),
         )
         _conn().commit()
         return cur.lastrowid if cur.rowcount else None
+
+
+def update_full_text(recipe_id: int, full_text: str) -> None:
+    with _lock:
+        _conn().execute(
+            "UPDATE recipes SET full_text = ? WHERE id = ?",
+            (full_text, recipe_id),
+        )
+        _conn().commit()
+
+
+def get_recipes_missing_full_text() -> list[dict]:
+    rows = _conn().execute(
+        "SELECT id, pdf_path, site FROM recipes WHERE full_text IS NULL OR full_text = ''"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def recipe_exists(pdf_path: str) -> bool:
@@ -101,10 +125,24 @@ def get_recipes_by_ids(recipe_ids: list[int]) -> list[dict]:
     return [by_id[rid] for rid in recipe_ids if rid in by_id]
 
 
+def _ligature_variants(term: str) -> list[str]:
+    """Génère les variantes oe↔œ et ae↔æ pour un terme normalisé."""
+    variants = {term}
+    for a, b in (("oe", "œ"), ("ae", "æ")):
+        expanded = set()
+        for v in variants:
+            expanded.add(v.replace(a, b))
+            expanded.add(v.replace(b, a))
+        variants |= expanded
+    return list(variants)
+
+
 def search_by_ingredient(ingredient: str) -> list[dict]:
+    terms = _ligature_variants(ingredient)
+    where = " OR ".join("LOWER(ingredients) LIKE LOWER(?)" for _ in terms)
+    params = [f"%{t}%" for t in terms]
     rows = _conn().execute(
-        "SELECT * FROM recipes WHERE LOWER(ingredients) LIKE LOWER(?)",
-        (f"%{ingredient}%",),
+        f"SELECT * FROM recipes WHERE {where}", params
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
@@ -113,6 +151,18 @@ def search_by_duration(max_minutes: int) -> list[dict]:
     rows = _conn().execute(
         "SELECT * FROM recipes WHERE duration_minutes IS NOT NULL AND duration_minutes <= ?",
         (max_minutes,),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def search_by_title_keywords(keywords: list[str]) -> list[dict]:
+    """Recettes dont le titre contient TOUS les mots-clés donnés."""
+    if not keywords:
+        return []
+    conditions = " AND ".join("LOWER(title) LIKE LOWER(?)" for _ in keywords)
+    params = [f"%{kw}%" for kw in keywords]
+    rows = _conn().execute(
+        f"SELECT * FROM recipes WHERE {conditions}", params
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
@@ -128,6 +178,18 @@ def search_by_category(category: str) -> list[dict]:
 def get_all_recipes() -> list[dict]:
     rows = _conn().execute("SELECT * FROM recipes").fetchall()
     return [_row_to_dict(r) for r in rows]
+
+
+def delete_recipes(recipe_ids: list[int]) -> int:
+    if not recipe_ids:
+        return 0
+    placeholders = ",".join("?" * len(recipe_ids))
+    with _lock:
+        cur = _conn().execute(
+            f"DELETE FROM recipes WHERE id IN ({placeholders})", recipe_ids
+        )
+        _conn().commit()
+    return cur.rowcount
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:

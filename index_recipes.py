@@ -17,7 +17,10 @@ from pathlib import Path
 import pdfplumber
 
 import config
-from pipeline.database import init_db, insert_recipe, recipe_exists, get_all_recipes
+from pipeline.database import (
+    init_db, insert_recipe, recipe_exists, get_all_recipes,
+    update_full_text, get_recipes_missing_full_text,
+)
 from pipeline.embeddings import init_chroma, add_recipe, recipe_exists as embed_exists
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,7 @@ def _iso_to_minutes(iso: str) -> int | None:
 
 
 def _parse_migusto(pdf_path: Path) -> dict:
+    text = _extract_text(pdf_path)
     json_path = pdf_path.with_suffix(".json")
     if json_path.exists():
         data = json.loads(json_path.read_text("utf-8"))
@@ -65,8 +69,8 @@ def _parse_migusto(pdf_path: Path) -> dict:
             "duration_minutes": _iso_to_minutes(data.get("totalTime", "")),
             "category":         data.get("recipeCategory") or None,
             "description":      (data.get("description") or "").strip() or None,
+            "full_text":        text or None,
         }
-    text = _extract_text(pdf_path)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     return {
         "title":            lines[0] if lines else _title_from_filename(pdf_path, "migusto_"),
@@ -76,6 +80,7 @@ def _parse_migusto(pdf_path: Path) -> dict:
         "duration_minutes": None,
         "category":         None,
         "description":      None,
+        "full_text":        text or None,
     }
 
 
@@ -126,6 +131,7 @@ def _parse_viandesuisse(pdf_path: Path) -> dict:
         "duration_minutes": duration_minutes,
         "category":         None,
         "description":      None,
+        "full_text":        text or None,
     }
 
 
@@ -169,6 +175,7 @@ def _parse_qoqa(pdf_path: Path) -> dict:
         "duration_minutes": duration_minutes,
         "category":         category,
         "description":      None,
+        "full_text":        text or None,
     }
 
 
@@ -178,6 +185,24 @@ _PARSERS = {
     "qoqa":         _parse_qoqa,
 }
 
+
+
+def backfill_full_text() -> int:
+    """Met à jour full_text pour les recettes déjà indexées qui n'en ont pas."""
+    missing = get_recipes_missing_full_text()
+    updated = 0
+    for row in missing:
+        pdf_path = Path(row["pdf_path"])
+        if not pdf_path.exists():
+            logger.warning("PDF introuvable : %s", pdf_path)
+            continue
+        text = _extract_text(pdf_path)
+        if text:
+            update_full_text(row["id"], text)
+            updated += 1
+            if updated % 50 == 0:
+                logger.info("  backfill : %d recettes mises à jour...", updated)
+    return updated
 
 
 def sync_embeddings() -> int:
@@ -271,10 +296,20 @@ def main() -> None:
         "--sync-embeddings", action="store_true",
         help="Sync SQLite recipes missing from ChromaDB without re-crawling",
     )
+    parser.add_argument(
+        "--backfill-text", action="store_true",
+        help="Remplir full_text pour les recettes déjà indexées sans texte complet",
+    )
     args = parser.parse_args()
 
     init_db()
     init_chroma()
+
+    if args.backfill_text:
+        logger.info("=== Backfill full_text ===")
+        n = backfill_full_text()
+        logger.info("Done — %d recettes mises à jour", n)
+        return
 
     if args.sync_embeddings:
         logger.info("=== Syncing embeddings (SQLite -> ChromaDB) ===")
