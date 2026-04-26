@@ -359,10 +359,19 @@ def chat(message: str, history: list[dict]) -> str:
         "et toutes les étapes de préparation. Ne résume pas, ne saute rien.\n"
         if is_detail else ""
     )
+    sites = database.get_sites_summary()
+    sites_str = "Sources : " + ", ".join(
+        f"{s['site']} ({s['count']} recettes)" for s in sites
+    ) + "." + chr(10) * 2
+    context_block = (
+        "Recettes disponibles :" + chr(10) * 2
+        + context + chr(10) * 2
+    )
     user_message_with_context = (
-        f"Recettes disponibles :\n\n{context}\n\n"
-        f"{detail_instruction}"
-        f"Question de l'utilisateur : {corrected}"
+        sites_str
+        + context_block
+        + detail_instruction
+        + "Question de l'utilisateur : " + corrected
     )
 
     return _call_llm(user_message_with_context, history)

@@ -207,3 +207,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         except json.JSONDecodeError:
             pass
     return d
+
+
+def get_sites_summary() -> list[dict]:
+    rows = _conn().execute(
+        "SELECT site, COUNT(*) as count FROM recipes GROUP BY site ORDER BY site"
+    ).fetchall()
+    return [dict(r) for r in rows]
