@@ -121,13 +121,17 @@ def _shutdown() -> str:
     return "Fermeture..."
 
 
+def _nouvelle_conversation() -> list:
+    reset_context()
+    return []
+
+
 def run_sync_embeddings():
     cmd = [sys.executable, "index_recipes.py", "--sync-embeddings"]
     yield from _stream(cmd)
 
 
 def run_cleanup_orphans() -> str:
-    from pathlib import Path
     from pipeline.embeddings import _get_collection
     recipes = get_all_recipes()
     orphans = [r for r in recipes if not Path(r["pdf_path"]).exists()]
@@ -240,10 +244,6 @@ def build_app() -> gr.Blocks:
 
                 gr.Markdown("---")
                 with gr.Row():
-                    def _nouvelle_conversation():
-                        reset_context()
-                        return []
-
                     _shutdown_msg_chat = gr.Textbox(visible=False)
                     gr.Button("Nouvelle conversation", variant="secondary").click(
                         fn=_nouvelle_conversation, inputs=[], outputs=[_chatbot]

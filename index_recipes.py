@@ -215,9 +215,8 @@ def sync_embeddings() -> int:
             continue
         ingredients = r.get("ingredients") or []
         if isinstance(ingredients, str):
-            import json as _json
             try:
-                ingredients = _json.loads(ingredients)
+                ingredients = json.loads(ingredients)
             except Exception:
                 ingredients = []
         add_recipe(

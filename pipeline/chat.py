@@ -25,6 +25,7 @@ def reset_context() -> None:
     global _last_recipe_ids
     _last_recipe_ids = []
 
+
 _SYSTEM_PROMPT = """Tu es un assistant culinaire francophone specialise dans les recettes de cuisine.
 Tu reponds uniquement en francais, de facon concise et chaleureuse.
 Tu t'appuies exclusivement sur les recettes fournies dans le contexte pour repondre.
@@ -191,7 +192,8 @@ def _find_in_context(query: str) -> list[dict]:
     def _overlap(r: dict) -> int:
         return len({w for w in _normalize(r["title"]).split() if len(w) > 3} & q_words)
     scored = sorted(context_recipes, key=_overlap, reverse=True)
-    if scored and _overlap(scored[0]) > 0:
+    top_score = _overlap(scored[0]) if scored else 0
+    if top_score > 0:
         return scored[:1]
 
     # 3) Recherche sémantique filtrée au contexte
@@ -210,10 +212,9 @@ def _find_in_context(query: str) -> list[dict]:
 
 _DETAIL_STOPWORDS = {
     "detaille", "detailler", "detaillons", "marche", "suivre", "donne", "montre",
-    "etape", "etapes", "prepar", "preparer", "preparation", "recette", "recettes",
+    "etape", "etapes", "preparer", "preparation", "recette", "recettes",
     "instruction", "instructions", "comment", "faire", "cuire", "cuisiner",
-    "procedure", "cuisson", "affiche", "explique", "temperature", "pour",
-    "moi", "les", "une", "des", "tout", "bien",
+    "procedure", "cuisson", "affiche", "explique", "temperature",
 }
 
 
@@ -262,15 +263,10 @@ def chat(message: str, history: list[dict]) -> str:
         _client = genai.Client(api_key=config.GEMINI_API_KEY)
 
     is_detail = _is_detail_request(message)
-    if is_detail and _last_recipe_ids:
-        # Cherche dans le contexte courant d'abord
-        recipes = _find_in_context(message)
+    if is_detail:
+        recipes = _find_in_context(message) if _last_recipe_ids else []
         if not recipes:
-            # Pas dans le contexte → recherche par titre dans toute la DB
             recipes = _search_for_detail(message)
-    elif is_detail:
-        # Pas de contexte (après reset ou première question) → recherche directe
-        recipes = _search_for_detail(message)
     else:
         recipes = search_recipes(message)
     context = format_context(recipes, detailed=is_detail)
