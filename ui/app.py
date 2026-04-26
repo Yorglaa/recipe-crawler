@@ -127,14 +127,14 @@ def run_index(sites: list[str], limit: int, loop: bool):
             break
 
 
-def stop_process() -> str:
+def stop_process(current_log: str = "") -> str:
     global _current_proc
     with _proc_lock:
         proc = _current_proc
     if proc and proc.poll() is None:
         proc.terminate()
-        return "⏹ Processus arrete."
-    return "Aucun processus en cours."
+        return current_log + chr(10) + "⏹ Arret demande."
+    return current_log + chr(10) + "(Aucun processus en cours.)"
 
 
 def _shutdown() -> str:
@@ -298,9 +298,7 @@ def build_app() -> gr.Blocks:
                 crawl_btn = gr.Button("Lancer un lot", variant="primary")
                 with gr.Row():
                     crawl_log = gr.Textbox(label="Logs crawl", lines=20, max_lines=30, interactive=False)
-                    with gr.Column(scale=0, min_width=140):
-                        stop_crawl_btn = gr.Button("⏹ Arreter", variant="stop", size="sm")
-                        stop_crawl_out = gr.Textbox(label="", interactive=False, lines=1, max_lines=1)
+                    stop_crawl_btn = gr.Button("⏹ Arreter", variant="stop", size="sm", scale=0, min_width=120)
 
                 # Indexation ──────────────────────────────────────────────────
                 gr.Markdown("---\n## Indexation")
@@ -321,9 +319,7 @@ def build_app() -> gr.Blocks:
                 index_btn = gr.Button("Indexer", variant="secondary")
                 with gr.Row():
                     index_log = gr.Textbox(label="Logs indexation", lines=25, max_lines=40, interactive=False)
-                    with gr.Column(scale=0, min_width=140):
-                        stop_index_btn = gr.Button("⏹ Arreter", variant="stop", size="sm")
-                        stop_index_out = gr.Textbox(label="", interactive=False, lines=1, max_lines=1)
+                    stop_index_btn = gr.Button("⏹ Arreter", variant="stop", size="sm", scale=0, min_width=120)
 
                 # Nettoyage orphelins ─────────────────────────────────────
                 gr.Markdown("---\n## Nettoyage")
@@ -368,8 +364,8 @@ def build_app() -> gr.Blocks:
                     outputs=index_log,
                 ).then(fn=_status, outputs=status_box)
 
-                stop_crawl_btn.click(fn=stop_process, inputs=[], outputs=stop_crawl_out)
-                stop_index_btn.click(fn=stop_process, inputs=[], outputs=stop_index_out)
+                stop_crawl_btn.click(fn=stop_process, inputs=[crawl_log], outputs=[crawl_log])
+                stop_index_btn.click(fn=stop_process, inputs=[index_log], outputs=[index_log])
 
                 sync_btn.click(
                     fn=run_sync_embeddings,
