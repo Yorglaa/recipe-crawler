@@ -6,7 +6,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 
 - **Crawlers**: BeautifulSoup · REST API · Playwright
 - **Indexer**: pdfplumber · SQLite (metadata) · ChromaDB + sentence-transformers (semantic search)
-- **Chat**: Gemini 2.5 Flash · Gradio
+- **Chat**: Gemini 2.5 Flash · Groq (llama-3.3-70b, fallback) · Gradio
 
 ## Sites supported
 
@@ -24,6 +24,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 - [weasyprint](https://doc.courtbouillon.org/weasyprint/) (+ GTK on Windows — see below)
 - [Playwright](https://playwright.dev/python/) with Chromium (for QoQa)
 - A Gemini API key
+- A Groq API key (optional — used as fallback if Gemini is unavailable)
 
 ### Windows: weasyprint dependencies
 
@@ -50,15 +51,16 @@ playwright install chromium
 
 ## Configuration
 
-Create a `.env` file at the root of the project with your Gemini API key:
+Create a `.env` file at the root of the project:
 
 ```
-GEMINI_API_KEY=your-key-here
+GEMINI_API_KEY=your-gemini-key-here
+GROQ_API_KEY=your-groq-key-here      # optional — fallback only
 ```
 
 `config.py` loads this file automatically via `python-dotenv`. The `.env` file is gitignored — never commit it.
 
-All other settings (`CHROMA_DB_PATH`, `SQLITE_DB_PATH`, `EMBEDDING_MODEL`, `GEMINI_MODEL`) are defined in `config.py` with sensible defaults.
+All other settings (`CHROMA_DB_PATH`, `SQLITE_DB_PATH`, `EMBEDDING_MODEL`, `GEMINI_MODEL`, `GROQ_MODEL`) are defined in `config.py` with sensible defaults.
 
 ---
 
@@ -237,7 +239,7 @@ recipe-crawler/
 ├── pipeline/
 │   ├── database.py         # SQLite metadata store (thread-safe)
 │   ├── embeddings.py       # ChromaDB vector store (offline, HF_HUB_OFFLINE=1)
-│   └── chat.py             # Query router + Gemini chat
+│   └── chat.py             # Query router + Gemini chat (Groq fallback)
 │
 ├── ui/
 │   └── app.py              # Gradio interface: Chat + Admin tabs

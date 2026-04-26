@@ -368,6 +368,26 @@ def chat(message: str, history: list[dict]) -> str:
     return _call_llm(user_message_with_context, history)
 
 
+def _call_groq(user_message_with_context: str, history: list[dict]) -> str:
+    from groq import Groq
+    client = Groq(api_key=config.GROQ_API_KEY)
+    messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    for turn in history:
+        role = "user" if turn["role"] == "user" else "assistant"
+        content = turn["content"]
+        if isinstance(content, list):
+            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+        messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message_with_context})
+    response = client.chat.completions.create(
+        model=config.GROQ_MODEL,
+        messages=messages,
+        temperature=0.7,
+        max_tokens=2048,
+    )
+    return "[fallback: " + config.GROQ_MODEL + "]\n\n" + response.choices[0].message.content
+
+
 def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
     contents: list[types.Content] = []
     for turn in history:
@@ -396,21 +416,26 @@ def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
         return response.text
     except Exception as e:
         code = getattr(e, "status_code", None) or getattr(e, "code", None)
-        if code in (502, 503):
-            return "⚠️ Le service Gemini est temporairement indisponible (502/503). Réessaie dans quelques secondes."
-        if code != 429:
-            return f"⚠️ Erreur inattendue ({type(e).__name__}). Réessaie ou redémarre l'application."
+        if code == 429:
+            fallback = getattr(config, "GEMINI_FALLBACK_MODEL", None)
+            if fallback:
+                time.sleep(5)
+                try:
+                    response = _client.models.generate_content(
+                        model=fallback,
+                        contents=contents,
+                        config=gen_config,
+                    )
+                    return "[fallback: " + fallback + "]\n\n" + response.text
+                except Exception:
+                    pass
 
-    fallback = getattr(config, "GEMINI_FALLBACK_MODEL", None)
-    if not fallback:
-        return "⚠️ Quota Gemini dépassé (429). Attends un moment avant de réessayer."
-    time.sleep(5)
-    try:
-        response = _client.models.generate_content(
-            model=fallback,
-            contents=contents,
-            config=gen_config,
-        )
-        return f"[fallback: {fallback}]\n\n" + response.text
-    except Exception:
-        return "⚠️ Quota Gemini dépassé sur les deux modèles. Réessaie dans quelques minutes."
+    groq_key = getattr(config, "GROQ_API_KEY", "")
+    groq_model = getattr(config, "GROQ_MODEL", "")
+    if groq_key and groq_model:
+        try:
+            return _call_groq(user_message_with_context, history)
+        except Exception:
+            pass
+
+    return "⚠️ Tous les services IA sont indisponibles. Réessaie dans quelques minutes."
