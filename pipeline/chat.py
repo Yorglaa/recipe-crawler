@@ -22,15 +22,17 @@ from pipeline.database import get_recipe_by_title as _get_by_title
 _client: genai.Client | None = None
 _last_recipe_ids: list[int] = []
 _last_disambig_titles: list[str] = []
+_last_site: str | None = None
 
 DISAMBIG_MARKER = "Plusieurs recettes correspondent"
 _DISAMBIG_MARKER = DISAMBIG_MARKER  # alias interne
 
 
 def reset_context() -> None:
-    global _last_recipe_ids, _last_disambig_titles
+    global _last_recipe_ids, _last_disambig_titles, _last_site
     _last_recipe_ids = []
     _last_disambig_titles = []
+    _last_site = None
 
 
 def _spell_correct(message: str) -> str:
@@ -253,6 +255,12 @@ _DETAIL_STOPWORDS = {
 
 _KNOWN_SITES = {'viandesuisse', 'qoqa', 'migusto'}
 
+_SHOW_ALL_PATTERN = re.compile(
+    r"(toutes?|tout|liste\s+compl[eè]te?|compl[eè]tement|"
+    r"montre[- ]les[- ]toutes?|affiche[- ]tout|toutes?\s+les\s+recettes?)",
+    re.IGNORECASE,
+)
+
 
 def _extract_site(query: str) -> str | None:
     q = _normalize(query)
@@ -312,7 +320,7 @@ def format_context(recipes: list[dict], detailed: bool = False) -> str:
 
 
 def chat(message: str, history: list[dict]) -> str:
-    global _client, _last_disambig_titles, _last_recipe_ids
+    global _client, _last_disambig_titles, _last_recipe_ids, _last_site
     if _client is None:
         _client = genai.Client(api_key=config.GEMINI_API_KEY)
 
@@ -362,10 +370,30 @@ def chat(message: str, history: list[dict]) -> str:
                         history,
                     )
 
-    corrected = _spell_correct(message)
+    # Suivi de contexte site : "montre les toutes", "affiche la liste complète", etc.
+    if _last_site and _SHOW_ALL_PATTERN.search(message):
+        site_recipes = database.search_by_site(_last_site, limit=200)
+        _last_recipe_ids = [r['id'] for r in site_recipes]
+        site_context = format_context(site_recipes[:50])
+        sites = database.get_sites_summary()
+        sites_str = 'Sources : ' + ', '.join(
+            f"{s['site']} ({s['count']} recettes)" for s in sites
+        ) + '.' + chr(10) * 2
+        msg = (
+            sites_str
+            + 'Recettes disponibles :' + chr(10) * 2
+            + site_context + chr(10) * 2
+            + "Question de l'utilisateur : " + message
+        )
+        return _call_llm(msg, history)
 
-    site = _extract_site(corrected)
+    site = _extract_site(message)
+    corrected = _spell_correct(message)
+    if not site:
+        site = _extract_site(corrected)
+
     if site:
+        _last_site = site
         site_recipes = database.search_by_site(site, limit=200)
         _last_recipe_ids = [r['id'] for r in site_recipes]
         site_context = format_context(site_recipes[:50])
