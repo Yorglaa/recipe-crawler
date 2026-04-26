@@ -214,3 +214,11 @@ def get_sites_summary() -> list[dict]:
         "SELECT site, COUNT(*) as count FROM recipes GROUP BY site ORDER BY site"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def search_by_site(site: str, limit: int = 50) -> list[dict]:
+    rows = _conn().execute(
+        "SELECT * FROM recipes WHERE site = ? ORDER BY title LIMIT ?",
+        (site, limit),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]

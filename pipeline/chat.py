@@ -251,6 +251,16 @@ _DETAIL_STOPWORDS = {
     "procedure", "cuisson", "affiche", "explique", "temperature",
 }
 
+_KNOWN_SITES = {'viandesuisse', 'qoqa', 'migusto'}
+
+
+def _extract_site(query: str) -> str | None:
+    q = _normalize(query)
+    for site in _KNOWN_SITES:
+        if site in q:
+            return site
+    return None
+
 
 def _search_for_detail(query: str) -> list[dict]:
     """Recherche une recette par mots-clés du titre, pour les demandes de détail hors contexte."""
@@ -323,6 +333,23 @@ def chat(message: str, history: list[dict]) -> str:
                     )
 
     corrected = _spell_correct(message)
+
+    site = _extract_site(corrected)
+    if site:
+        site_recipes = database.search_by_site(site)
+        _last_recipe_ids = [r['id'] for r in site_recipes]
+        site_context = format_context(site_recipes[:20])
+        sites = database.get_sites_summary()
+        sites_str = 'Sources : ' + ', '.join(
+            f"{s['site']} ({s['count']} recettes)" for s in sites
+        ) + '.' + chr(10) * 2
+        msg = (
+            sites_str
+            + 'Recettes disponibles :' + chr(10) * 2
+            + site_context + chr(10) * 2
+            + "Question de l'utilisateur : " + corrected
+        )
+        return _call_llm(msg, history)
 
     is_detail = _is_detail_request(corrected)
     if is_detail:
