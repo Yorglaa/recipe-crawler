@@ -115,15 +115,14 @@ def run_index(sites: list[str], limit: int, loop: bool):
             break
 
 
-
 def _shutdown() -> str:
     threading.Timer(0.4, lambda: os._exit(0)).start()
     return "Fermeture..."
 
 
-def _nouvelle_conversation() -> list:
+def _nouvelle_conversation() -> tuple:
     reset_context()
-    return []
+    return [], []
 
 
 def run_sync_embeddings():
@@ -145,7 +144,6 @@ def run_cleanup_orphans() -> str:
     for r in orphans:
         lines.append(f"  - [{r['site']}] {r['title']}")
     return "\n".join(lines)
-
 
 
 _CSS = """
@@ -205,7 +203,7 @@ _JS = """
 
     setTimeout(() => {
         applyStyles();
-        new MutationObserver(applyStyles).observe(document.body, {childList: true, subtree: true});
+        new MutationObserver(() => { applyStyles(); }).observe(document.body, {childList: true, subtree: true});
     }, 2000);
 }
 """
@@ -223,7 +221,7 @@ def build_app() -> gr.Blocks:
                     "ou une recherche precise (*toutes les soupes en moins de 20 min*)."
                 )
                 _chatbot = gr.Chatbot(autoscroll=True)
-                gr.ChatInterface(
+                _ci = gr.ChatInterface(
                     fn=chat,
                     chatbot=_chatbot,
                     textbox=gr.Textbox(
@@ -246,7 +244,9 @@ def build_app() -> gr.Blocks:
                 with gr.Row():
                     _shutdown_msg_chat = gr.Textbox(visible=False)
                     gr.Button("Nouvelle conversation", variant="secondary").click(
-                        fn=_nouvelle_conversation, inputs=[], outputs=[_chatbot]
+                        fn=_nouvelle_conversation,
+                        inputs=[],
+                        outputs=[_chatbot, _ci.chatbot_state],
                     )
                     gr.Button("Fermer l'application", variant="stop").click(
                         fn=_shutdown, inputs=[], outputs=[_shutdown_msg_chat]
@@ -309,7 +309,6 @@ def build_app() -> gr.Blocks:
                 )
                 sync_btn = gr.Button("Synchroniser", variant="secondary")
                 sync_log = gr.Textbox(label="Logs sync", lines=10, max_lines=20, interactive=False)
-
 
                 # Fermeture ──────────────────────────────────────────────────
                 gr.Markdown("---")

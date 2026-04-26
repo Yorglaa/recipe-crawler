@@ -107,6 +107,13 @@ def count_recipes() -> int:
     return row[0] if row else 0
 
 
+def get_recipe_by_title(title: str) -> dict | None:
+    row = _conn().execute(
+        "SELECT * FROM recipes WHERE title = ?", (title,)
+    ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
 def get_recipe_by_id(recipe_id: int) -> dict | None:
     row = _conn().execute(
         "SELECT * FROM recipes WHERE id = ?", (recipe_id,)

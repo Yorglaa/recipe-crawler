@@ -9,6 +9,7 @@ Routing :
 """
 
 import re
+import time
 import unicodedata
 
 from google import genai
@@ -16,14 +17,42 @@ from google.genai import types
 
 import config
 from pipeline import database, embeddings
+from pipeline.database import get_recipe_by_title as _get_by_title
 
 _client: genai.Client | None = None
 _last_recipe_ids: list[int] = []
+_last_disambig_titles: list[str] = []
+
+DISAMBIG_MARKER = "Plusieurs recettes correspondent"
+_DISAMBIG_MARKER = DISAMBIG_MARKER  # alias interne
 
 
 def reset_context() -> None:
-    global _last_recipe_ids
+    global _last_recipe_ids, _last_disambig_titles
     _last_recipe_ids = []
+    _last_disambig_titles = []
+
+
+def _spell_correct(message: str) -> str:
+    """Corrige silencieusement orthographe et accents avant le routage."""
+    global _client
+    try:
+        resp = _client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=[types.Content(role="user", parts=[types.Part(
+                text=(
+                    "Corrige uniquement les fautes d'orthographe et les accents manquants "
+                    "dans ce message en français. Ne change pas le sens, ne reformule pas, "
+                    "ne réponds pas à la question. Réponds avec le message corrigé seulement.\n\n"
+                    f"Message : {message}"
+                )
+            )])],
+            config=types.GenerateContentConfig(temperature=0, max_output_tokens=300),
+        )
+        corrected = (resp.text or "").strip()
+        return corrected if corrected else message
+    except Exception:
+        return message
 
 
 _SYSTEM_PROMPT = """Tu es un assistant culinaire francophone specialise dans les recettes de cuisine.
@@ -89,7 +118,7 @@ def classify_query(query: str) -> str:
 def _extract_main_ingredient(normalized_query: str) -> str | None:
     m = re.search(
         r"(?:avec\s+(?:de\s+l[' ]?|du\s+|de\s+la\s+|des\s+)|"
-        r"a\s+base\s+de\s+|contenant\s+|(?:des?\s+)?recettes?\s+(?:de\s+|du\s+|au?\s+|aux\s+))"
+        r"a\s+base\s+de\s+|contenant\s+|(?:des?\s+)?recettes?\s+(?:de\s+|d[' ]\s*|du\s+|au?\s+|aux\s+))"
         r"([a-z]{3,})",
         normalized_query,
     )
@@ -133,13 +162,18 @@ def search_recipes(query: str, n_results: int = 6) -> list[dict]:
                 seen.add(r["id"])
         results = merged[:n_results]
 
-    else:  # rag — supplement with SQL ingredient search
+    else:  # rag — supplement with SQL ingredient + title search
         rag_rows = _rag(query, n_results)
         ingredient = _extract_main_ingredient(q)
         if ingredient:
             ing_rows = database.search_by_ingredient(ingredient)
+            title_rows = database.search_by_title_keywords([ingredient])
             seen = {r["id"] for r in rag_rows}
-            extra = [r for r in ing_rows if r["id"] not in seen]
+            extra = []
+            for r in ing_rows + title_rows:
+                if r["id"] not in seen:
+                    extra.append(r)
+                    seen.add(r["id"])
             results = rag_rows + extra
         else:
             results = rag_rows
@@ -185,16 +219,16 @@ def _find_in_context(query: str) -> list[dict]:
     # 1) Correspondance directe du titre dans la requête (cas "détaille moi X")
     by_title = [r for r in context_recipes if _normalize(r["title"]) in q_norm]
     if by_title:
-        return by_title[:2]
+        return by_title
 
-    # 2) Overlap de mots-clés (> 3 caractères)
-    q_words = {w for w in q_norm.split() if len(w) > 3}
+    # 2) Overlap de mots-clés (> 3 caractères, sans mots de requête parasites)
+    q_words = {w for w in q_norm.split() if len(w) > 3 and w not in _DETAIL_STOPWORDS}
     def _overlap(r: dict) -> int:
         return len({w for w in _normalize(r["title"]).split() if len(w) > 3} & q_words)
     scored = sorted(context_recipes, key=_overlap, reverse=True)
     top_score = _overlap(scored[0]) if scored else 0
     if top_score > 0:
-        return scored[:1]
+        return [r for r in scored if _overlap(r) == top_score]
 
     # 3) Recherche sémantique filtrée au contexte
     context_set = set(_last_recipe_ids)
@@ -258,24 +292,83 @@ def format_context(recipes: list[dict], detailed: bool = False) -> str:
 
 
 def chat(message: str, history: list[dict]) -> str:
-    global _client
+    global _client, _last_disambig_titles
     if _client is None:
         _client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-    is_detail = _is_detail_request(message)
+    # Désambiguïsation : si le dernier message du bot était une liste numérotée,
+    # lire le choix de l'utilisateur directement depuis l'historique
+    last_bot = next(
+        (t["content"] for t in reversed(history) if t.get("role") == "assistant"),
+        None,
+    )
+    if last_bot and _DISAMBIG_MARKER in last_bot:
+        num = re.match(r"^\s*(\d+)\s*$", message.strip())
+        if num and _last_disambig_titles:
+            idx = int(num.group(1)) - 1
+            if 0 <= idx < len(_last_disambig_titles):
+                recipe = _get_by_title(_last_disambig_titles[idx])
+                recipes = [recipe] if recipe else []
+                if recipes:
+                    context = format_context(recipes, detailed=True)
+                    detail_instruction = (
+                        "\nINSTRUCTION : Reproduis la recette complète telle qu'elle apparaît dans "
+                        "la section '--- Recette complète ---' : ingrédients, quantités, durées, "
+                        "et toutes les étapes de préparation. Ne résume pas, ne saute rien.\n"
+                    )
+                    return _call_llm(
+                        f"Recettes disponibles :\n\n{context}\n\n{detail_instruction}"
+                        f"Question de l'utilisateur : {message}",
+                        history,
+                    )
+
+    corrected = _spell_correct(message)
+
+    is_detail = _is_detail_request(corrected)
     if is_detail:
-        recipes = _find_in_context(message) if _last_recipe_ids else []
+        recipes = _find_in_context(corrected) if _last_recipe_ids else []
         if not recipes:
-            recipes = _search_for_detail(message)
+            recipes = _search_for_detail(corrected)
+        if len(recipes) > 1:
+            seen_titles: set[str] = set()
+            unique: list[dict] = []
+            for r in recipes:
+                if r["title"] not in seen_titles:
+                    seen_titles.add(r["title"])
+                    unique.append(r)
+            if len(unique) > 1:
+                _last_disambig_titles = [r["title"] for r in unique]
+                lines = [
+                    f"{i + 1}. **{r['title']}** ({r['site']})"
+                    + (f" — {r['duration_minutes']} min" if r.get("duration_minutes") else "")
+                    for i, r in enumerate(unique)
+                ]
+                return (
+                    f"{_DISAMBIG_MARKER} — tapez le numéro de votre choix "
+                    f"ou précisez votre demande :\n\n"
+                    + "\n".join(lines)
+                )
+            recipes = unique
     else:
-        recipes = search_recipes(message)
+        recipes = search_recipes(corrected)
     context = format_context(recipes, detailed=is_detail)
 
+    detail_instruction = (
+        "\nINSTRUCTION : Reproduis la recette complète telle qu'elle apparaît dans "
+        "la section '--- Recette complète ---' : ingrédients, quantités, durées, "
+        "et toutes les étapes de préparation. Ne résume pas, ne saute rien.\n"
+        if is_detail else ""
+    )
     user_message_with_context = (
         f"Recettes disponibles :\n\n{context}\n\n"
-        f"Question de l'utilisateur : {message}"
+        f"{detail_instruction}"
+        f"Question de l'utilisateur : {corrected}"
     )
 
+    return _call_llm(user_message_with_context, history)
+
+
+def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
     contents: list[types.Content] = []
     for turn in history:
         role = "user" if turn["role"] == "user" else "model"
@@ -289,20 +382,35 @@ def chat(message: str, history: list[dict]) -> str:
         types.Content(role="user", parts=[types.Part(text=user_message_with_context)])
     )
 
+    gen_config = types.GenerateContentConfig(
+        system_instruction=_SYSTEM_PROMPT,
+        temperature=0.7,
+        max_output_tokens=2048,
+    )
     try:
         response = _client.models.generate_content(
             model=config.GEMINI_MODEL,
             contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=_SYSTEM_PROMPT,
-                temperature=0.7,
-            ),
+            config=gen_config,
         )
         return response.text
     except Exception as e:
         code = getattr(e, "status_code", None) or getattr(e, "code", None)
         if code in (502, 503):
             return "⚠️ Le service Gemini est temporairement indisponible (502/503). Réessaie dans quelques secondes."
-        if code == 429:
-            return "⚠️ Quota Gemini dépassé (429). Attends un moment avant de réessayer."
-        return f"⚠️ Erreur inattendue ({type(e).__name__}). Réessaie ou redémarre l'application."
+        if code != 429:
+            return f"⚠️ Erreur inattendue ({type(e).__name__}). Réessaie ou redémarre l'application."
+
+    fallback = getattr(config, "GEMINI_FALLBACK_MODEL", None)
+    if not fallback:
+        return "⚠️ Quota Gemini dépassé (429). Attends un moment avant de réessayer."
+    time.sleep(5)
+    try:
+        response = _client.models.generate_content(
+            model=fallback,
+            contents=contents,
+            config=gen_config,
+        )
+        return f"[fallback: {fallback}]\n\n" + response.text
+    except Exception:
+        return "⚠️ Quota Gemini dépassé sur les deux modèles. Réessaie dans quelques minutes."

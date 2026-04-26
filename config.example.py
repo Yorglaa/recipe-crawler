@@ -18,3 +18,4 @@ CHROMA_DB_PATH = str(_ROOT / "chromadb")
 SQLITE_DB_PATH = str(_ROOT / "recipes.db")
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
