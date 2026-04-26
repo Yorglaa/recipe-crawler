@@ -44,22 +44,33 @@ def _iter_recipe_slugs():
     offset = 0
     while True:
         logger.info("Fetching recipe list offset=%d", offset)
-        response = requests.post(
-            API_URL,
-            json={
-                "language": "fr",
-                "recipeFilterUuid": _FILTER_UUID,
-                "searchTerm": "",
-                "limit": _PAGE_SIZE,
-                "offset": offset,
-                "uuids": [],
-                "ingredients": [],
-                "order": "relevance:DESC",
-            },
-            headers={**HEADERS, "Content-Type": "application/json", "Expect": ""},
-            timeout=15,
-        )
-        response.raise_for_status()
+        for attempt in range(4):
+            try:
+                response = requests.post(
+                    API_URL,
+                    json={
+                        "language": "fr",
+                        "recipeFilterUuid": _FILTER_UUID,
+                        "searchTerm": "",
+                        "limit": _PAGE_SIZE,
+                        "offset": offset,
+                        "uuids": [],
+                        "ingredients": [],
+                        "order": "relevance:DESC",
+                    },
+                    headers={**HEADERS, "Content-Type": "application/json"},
+                    timeout=15,
+                )
+                response.raise_for_status()
+                break
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 417 and attempt < 3:
+                    wait = 15 * (attempt + 1)
+                    logger.warning("417 at offset=%d, retry %d/3 in %ds", offset, attempt + 1, wait)
+                    time.sleep(wait)
+                else:
+                    raise
+
         data = response.json()
 
         recipes = data.get("recipes", [])
