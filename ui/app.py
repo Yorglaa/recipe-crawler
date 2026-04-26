@@ -61,9 +61,11 @@ def _stream(cmd: list[str]):
     output = f"$ {' '.join(cmd)}" + chr(10) * 2
     yield output
     try:
+        _SKIP = ("GLib-GIO-WARNING", "GLib-GObject-WARNING", "GLib-WARNING", "(process:")
         for line in proc.stdout:
-            output += line
-            yield output
+            if not any(line.startswith(s) or s in line for s in _SKIP):
+                output += line
+                yield output
     except Exception:
         pass
     proc.wait()
