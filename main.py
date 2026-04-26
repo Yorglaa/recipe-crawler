@@ -66,6 +66,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
         datefmt="%H:%M:%S",
     )
+    logging.getLogger("fontTools").setLevel(logging.WARNING)
+    logging.getLogger("weasyprint").setLevel(logging.WARNING)
 
     args = _parse_args()
     sites = list(_SITES) if "all" in args.sites else args.sites
