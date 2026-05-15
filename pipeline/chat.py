@@ -301,6 +301,58 @@ _SHOW_ALL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_COUNT_PATTERN = re.compile(
+    r"\bcombien\b.*\brecettes?\b|\bcombien\b.*\bplats?\b"
+    r"|\btu\s+en\s+as\s+combien\b|\bcombien\s+en\s+as[- ]tu\b"
+    r"|\bcombien\s+as[- ]tu\s+de\b",
+    re.IGNORECASE,
+)
+
+
+def _handle_count(query: str) -> str:
+    q = _normalize(query)
+
+    site = _extract_site(query)
+    if site:
+        sites = database.get_sites_summary()
+        for s in sites:
+            if s["site"] == site:
+                n = s["count"]
+                return f"J'ai **{n} recette{'s' if n != 1 else ''}** de **{site}** dans ma base."
+        return f"Aucune recette de {site} trouvée."
+
+    ingredients = _extract_ingredients(q)
+    if len(ingredients) >= 2:
+        per_ing = []
+        for ing in ingredients:
+            ids = {r["id"] for r in database.search_by_ingredient(ing)}
+            ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
+            per_ing.append(ids)
+        intersection = set.intersection(*per_ing)
+        n = len(intersection)
+        ings_str = " et ".join(ingredients)
+        return f"J'ai **{n} recette{'s' if n != 1 else ''}** avec {ings_str} dans ma base."
+    if ingredients:
+        ing = ingredients[0]
+        ids = {r["id"] for r in database.search_by_ingredient(ing)}
+        ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
+        n = len(ids)
+        return f"J'ai **{n} recette{'s' if n != 1 else ''}** avec {ing} dans ma base."
+
+    for kw in _CATEGORY_KEYWORDS:
+        if kw in q:
+            n = len(database.search_by_category(kw))
+            return f"J'ai **{n} recette{'s' if n != 1 else ''}** de type « {kw} » dans ma base."
+
+    minutes = _extract_minutes(query)
+    if minutes:
+        n = len(database.search_by_duration(minutes))
+        return f"J'ai **{n} recette{'s' if n != 1 else ''}** de {minutes} minutes ou moins dans ma base."
+
+    total = database.count_recipes()
+    sites = database.get_sites_summary()
+    breakdown = ", ".join(f"{s['site']} ({s['count']})" for s in sites)
+    return f"J'ai **{total} recettes** au total ({breakdown})."
 
 def _extract_site(query: str) -> str | None:
     q = _normalize(query)
@@ -457,6 +509,9 @@ def chat(message: str, history: list[dict]) -> str:
             + "Question de l'utilisateur : " + message
         )
         return _call_llm(msg, history)
+
+    if _COUNT_PATTERN.search(message):
+        return _handle_count(message)
 
     if _PDF_OPEN_PATTERN.search(message) and _last_recipe_ids:
         recipe = None
