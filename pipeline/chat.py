@@ -45,7 +45,7 @@ Tu reponds uniquement en francais, de facon concise et chaleureuse.
 Tu t'appuies exclusivement sur les recettes fournies dans le contexte pour repondre.
 Quand plusieurs recettes correspondent a la demande, liste-les toutes avec leur titre et duree.
 Pour chaque recette que tu mentionnes, indique TOUJOURS sa provenance entre parentheses apres le titre,
-en utilisant exactement le nom du site tel qu'il apparait dans le contexte : viandesuisse, qoqa ou migusto.
+en utilisant exactement le nom du site tel qu'il apparait dans le contexte : viandesuisse, qoqa, migusto ou fooby.
 Exemple : "Poulet roti aux herbes (viandesuisse) — 45 min".
 Si aucune recette pertinente n'est disponible, dis-le honnetement et propose une piste generale.
 Ne mentionne jamais les noms de fichiers PDF ni les identifiants techniques.
@@ -293,7 +293,7 @@ _DETAIL_STOPWORDS = {
     "procedure", "cuisson", "affiche", "explique", "temperature",
 }
 
-_KNOWN_SITES = {'viandesuisse', 'qoqa', 'migusto'}
+_KNOWN_SITES = {'viandesuisse', 'qoqa', 'migusto', 'fooby'}
 
 _SHOW_ALL_PATTERN = re.compile(
     r"(toutes?|tout|liste\s+compl[eè]te?|compl[eè]tement|"
