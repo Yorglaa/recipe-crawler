@@ -627,9 +627,16 @@ def chat(message: str, history: list[dict]) -> str:
         f"(ingrédient, durée, catégorie, site...).]\n"
         if total_found > len(recipes) else ""
     )
+    duration_minutes = _extract_minutes(message) if not is_detail else None
+    duration_note = (
+        f"\n[Note : Toutes les recettes ci-dessous ont une durée de préparation "
+        f"de {duration_minutes} minutes ou moins — elles sont toutes filtrées par durée.]\n"
+        if duration_minutes and recipes else ""
+    )
     context_block = (
         "Recettes disponibles :" + chr(10) * 2
         + context + chr(10) * 2
+        + duration_note
         + truncation_note
     )
     user_message_with_context = (

@@ -22,4 +22,8 @@ GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
 
 
 GROQ_API_KEY = ""          # à renseigner
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# Modèles Groq recommandés (du meilleur au plus léger) :
+#   moonshotai/kimi-k2-instruct  — excellent suivi de contexte, recommandé
+#   mistral-saba-24b             — léger, très bon en français
+#   llama-3.3-70b-versatile      — disponible partout mais suit mal le contexte
+GROQ_MODEL = "moonshotai/kimi-k2-instruct"
