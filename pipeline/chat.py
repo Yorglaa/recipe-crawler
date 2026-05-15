@@ -652,7 +652,13 @@ def _call_groq(user_message_with_context: str, history: list[dict]) -> str:
         if isinstance(turn_content, list):
             turn_content = " ".join(p.get("text", "") for p in turn_content if isinstance(p, dict))
         messages.append({"role": role, "content": turn_content})
-    msg = user_message_with_context[:6000]
+    groq_prefix = (
+        "INSTRUCTION ABSOLUE : base-toi UNIQUEMENT sur les recettes listées "
+        "ci-dessous pour répondre. Si des recettes sont présentes dans le contexte, "
+        "utilise-les — ne dis jamais que les informations sont manquantes ou imprécises "
+        "si elles figurent dans le contexte.\n\n"
+    )
+    msg = (groq_prefix + user_message_with_context)[:8000]
     messages.append({"role": "user", "content": msg})
     response = client.chat.completions.create(
         model=config.GROQ_MODEL,
