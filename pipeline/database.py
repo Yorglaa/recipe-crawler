@@ -163,13 +163,17 @@ def search_by_duration(max_minutes: int) -> list[dict]:
 
 
 def search_by_title_keywords(keywords: list[str]) -> list[dict]:
-    """Recettes dont le titre contient TOUS les mots-clés donnés."""
+    """Recettes dont le titre contient TOUS les mots-clés donnés (variantes ligatures incluses)."""
     if not keywords:
         return []
-    conditions = " AND ".join("LOWER(title) LIKE LOWER(?)" for _ in keywords)
-    params = [f"%{kw}%" for kw in keywords]
+    conditions = []
+    params = []
+    for kw in keywords:
+        variants = _ligature_variants(kw)
+        conditions.append("(" + " OR ".join("LOWER(title) LIKE LOWER(?)" for _ in variants) + ")")
+        params.extend(f"%{v}%" for v in variants)
     rows = _conn().execute(
-        f"SELECT * FROM recipes WHERE {conditions}", params
+        f"SELECT * FROM recipes WHERE {' AND '.join(conditions)}", params
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
