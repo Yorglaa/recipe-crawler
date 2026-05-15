@@ -137,6 +137,49 @@ def _parse_viandesuisse(pdf_path: Path) -> dict:
 
 
 _QOQA_STEPS_RE = re.compile(r"[ÉE]tapes?\s+de\s+pr[eé]paration", re.IGNORECASE)
+_QOQA_SPLIT_X = 210  # boundary between left and right ingredient columns
+
+
+def _qoqa_ingredients_from_pdf(pdf_path: Path) -> list[str]:
+    """Extrait les ingrédients depuis les deux colonnes de la page ingrédients qoqa."""
+    try:
+        with pdfplumber.open(pdf_path) as p:
+            for page in p.pages:
+                text = page.extract_text() or ""
+                if "Liste des ingr" not in text:
+                    continue
+                words = page.extract_words()
+                y_start = y_end = None
+                for wd in words:
+                    if "Liste" in wd["text"] and y_start is None:
+                        y_start = wd["top"] + 5
+                    if y_start and "tapes" in wd["text"]:
+                        y_end = wd["top"]
+                        break
+                if y_start is None:
+                    return []
+                if y_end is None:
+                    y_end = page.height
+
+                rows: dict[int, dict] = {}
+                for wd in words:
+                    if wd["top"] <= y_start or wd["top"] >= y_end:
+                        continue
+                    row_key = round(wd["top"] / 4) * 4
+                    col = "L" if wd["x0"] < _QOQA_SPLIT_X else "R"
+                    rows.setdefault(row_key, {"L": [], "R": []})
+                    rows[row_key][col].append(wd["text"])
+
+                ingredients = []
+                for y in sorted(rows):
+                    for col in ("L", "R"):
+                        cell = " ".join(rows[y][col]).strip()
+                        if cell and cell not in ("-", "–", "•") and not re.match(r"^Ingr[eé]dients?$", cell, re.IGNORECASE):
+                            ingredients.append(cell)
+                return ingredients
+    except Exception:
+        pass
+    return []
 
 
 def _parse_qoqa(pdf_path: Path) -> dict:
@@ -157,16 +200,7 @@ def _parse_qoqa(pdf_path: Path) -> dict:
         if times:
             duration_minutes = sum(int(t) for t in times[:2])
 
-    in_ingredients = False
-    ingredients = []
-    for line in lines:
-        if "Liste des ingr" in line:
-            in_ingredients = True
-            continue
-        if in_ingredients and (_QOQA_STEPS_RE.search(line) or "Recette du" in line):
-            break
-        if in_ingredients and line:
-            ingredients.append(line)
+    ingredients = _qoqa_ingredients_from_pdf(pdf_path)
 
     return {
         "title":            title,
