@@ -220,9 +220,15 @@ def get_sites_summary() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def search_by_site(site: str, limit: int = 50) -> list[dict]:
-    rows = _conn().execute(
-        "SELECT * FROM recipes WHERE site = ? ORDER BY title LIMIT ?",
-        (site, limit),
-    ).fetchall()
+def search_by_site(site: str, limit: int | None = None) -> list[dict]:
+    if limit is None:
+        rows = _conn().execute(
+            "SELECT * FROM recipes WHERE site = ? ORDER BY title",
+            (site,),
+        ).fetchall()
+    else:
+        rows = _conn().execute(
+            "SELECT * FROM recipes WHERE site = ? ORDER BY title LIMIT ?",
+            (site, limit),
+        ).fetchall()
     return [_row_to_dict(r) for r in rows]

@@ -473,17 +473,23 @@ def chat(message: str, history: list[dict]) -> str:
 
     # Suivi de contexte site : "montre les toutes", "affiche la liste complète", etc.
     if _last_site and _SHOW_ALL_PATTERN.search(message):
-        site_recipes = database.search_by_site(_last_site, limit=200)
-        _last_recipe_ids = [r['id'] for r in site_recipes]
-        site_context = format_context(site_recipes[:50])
+        all_site = database.search_by_site(_last_site)
+        _last_recipe_ids = [r['id'] for r in all_site]
+        site_context = format_context(all_site[:50])
         sites = database.get_sites_summary()
         sites_str = 'Sources : ' + ', '.join(
             f"{s['site']} ({s['count']} recettes)" for s in sites
         ) + '.' + chr(10) * 2
+        trunc = (
+            f"\n[Note : {len(all_site)} recettes au total pour {_last_site}, "
+            f"50 premières affichées. L'utilisateur peut demander 'les suivantes'.]\n"
+            if len(all_site) > 50 else ""
+        )
         msg = (
             sites_str
             + 'Recettes disponibles :' + chr(10) * 2
             + site_context + chr(10) * 2
+            + trunc
             + "Question de l'utilisateur : " + message
         )
         return _call_llm(msg, history)
@@ -492,17 +498,23 @@ def chat(message: str, history: list[dict]) -> str:
 
     if site:
         _last_site = site
-        site_recipes = database.search_by_site(site, limit=200)
-        _last_recipe_ids = [r['id'] for r in site_recipes]
-        site_context = format_context(site_recipes[:50])
+        all_site = database.search_by_site(site)
+        _last_recipe_ids = [r['id'] for r in all_site]
+        site_context = format_context(all_site[:50])
         sites = database.get_sites_summary()
         sites_str = 'Sources : ' + ', '.join(
             f"{s['site']} ({s['count']} recettes)" for s in sites
         ) + '.' + chr(10) * 2
+        trunc = (
+            f"\n[Note : {len(all_site)} recettes au total pour {site}, "
+            f"50 premières affichées. L'utilisateur peut demander 'les suivantes'.]\n"
+            if len(all_site) > 50 else ""
+        )
         msg = (
             sites_str
             + 'Recettes disponibles :' + chr(10) * 2
             + site_context + chr(10) * 2
+            + trunc
             + "Question de l'utilisateur : " + message
         )
         return _call_llm(msg, history)
