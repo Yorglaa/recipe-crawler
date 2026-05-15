@@ -677,7 +677,7 @@ def _call_groq(user_message_with_context: str, history: list[dict]) -> str:
         "utilise-les — ne dis jamais que les informations sont manquantes ou imprécises "
         "si elles figurent dans le contexte.\n\n"
     )
-    msg = (groq_prefix + user_message_with_context)[:8000]
+    msg = (groq_prefix + user_message_with_context)[:20000]
     messages.append({"role": "user", "content": msg})
     response = client.chat.completions.create(
         model=config.GROQ_MODEL,
