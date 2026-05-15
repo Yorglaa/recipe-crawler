@@ -58,7 +58,7 @@ _DETAIL_PATTERNS = re.compile(
     r"\b(?:detaill|etap|prepar|prechauff)"
     # Mots complets : \b des deux côtés
     r"|\b(?:details?|marche.?a.?suivre|instruction|comment faire|comment cuire|"
-    r"comment cuisiner|comment la faire|comment le faire|donne.?moi|"
+    r"comment cuisiner|comment la faire|comment le faire|"
     r"recette complete|explique|procedure|cuisson|"
     r"temperature|degre|combien de temps|combien d.heures|"
     r"fais.?la|fais.?le|je veux faire|je vais faire|je la fais)\b",
@@ -308,8 +308,14 @@ _COUNT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_LIST_REQUEST_PATTERN = re.compile(
+    r"\b(?:la\s+liste|liste[- ]les|donne[- ]moi\s+la\s+liste"
+    r"|montre[- ](?:moi\s+)?la\s+liste|affiche[- ](?:la\s+)?liste)\b",
+    re.IGNORECASE,
+)
 
-def _handle_count(query: str) -> str:
+
+def _compute_exact_count(query: str) -> int:
     q = _normalize(query)
 
     site = _extract_site(query)
@@ -317,9 +323,8 @@ def _handle_count(query: str) -> str:
         sites = database.get_sites_summary()
         for s in sites:
             if s["site"] == site:
-                n = s["count"]
-                return f"J'ai **{n} recette{'s' if n != 1 else ''}** de **{site}** dans ma base."
-        return f"Aucune recette de {site} trouvée."
+                return s["count"]
+        return 0
 
     ingredients = _extract_ingredients(q)
     if len(ingredients) >= 2:
@@ -328,31 +333,23 @@ def _handle_count(query: str) -> str:
             ids = {r["id"] for r in database.search_by_ingredient(ing)}
             ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
             per_ing.append(ids)
-        intersection = set.intersection(*per_ing)
-        n = len(intersection)
-        ings_str = " et ".join(ingredients)
-        return f"J'ai **{n} recette{'s' if n != 1 else ''}** avec {ings_str} dans ma base."
+        return len(set.intersection(*per_ing))
     if ingredients:
         ing = ingredients[0]
         ids = {r["id"] for r in database.search_by_ingredient(ing)}
         ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
-        n = len(ids)
-        return f"J'ai **{n} recette{'s' if n != 1 else ''}** avec {ing} dans ma base."
+        return len(ids)
 
     for kw in _CATEGORY_KEYWORDS:
         if kw in q:
-            n = len(database.search_by_category(kw))
-            return f"J'ai **{n} recette{'s' if n != 1 else ''}** de type « {kw} » dans ma base."
+            return len(database.search_by_category(kw))
 
     minutes = _extract_minutes(query)
     if minutes:
-        n = len(database.search_by_duration(minutes))
-        return f"J'ai **{n} recette{'s' if n != 1 else ''}** de {minutes} minutes ou moins dans ma base."
+        return len(database.search_by_duration(minutes))
 
-    total = database.count_recipes()
-    sites = database.get_sites_summary()
-    breakdown = ", ".join(f"{s['site']} ({s['count']})" for s in sites)
-    return f"J'ai **{total} recettes** au total ({breakdown})."
+    return database.count_recipes()
+
 
 def _extract_site(query: str) -> str | None:
     q = _normalize(query)
@@ -511,7 +508,42 @@ def chat(message: str, history: list[dict]) -> str:
         return _call_llm(msg, history)
 
     if _COUNT_PATTERN.search(message):
-        return _handle_count(message)
+        exact_count = _compute_exact_count(message)
+        recipes, _ = search_recipes(message, n_results=20)
+        context = format_context(recipes)
+        sites_data = database.get_sites_summary()
+        sites_str = "Sources : " + ", ".join(
+            f"{s['site']} ({s['count']} recettes)" for s in sites_data
+        ) + "." + chr(10) * 2
+        count_note = (
+            f"\n[INSTRUCTION : L'utilisateur demande combien de recettes correspondent. "
+            f"Le nombre exact est {exact_count}. "
+            f"Commence ta réponse en mentionnant ce chiffre précis. "
+            f"Les recettes ci-dessous sont des exemples parmi ces {exact_count}.]\n"
+        )
+        msg = (
+            sites_str
+            + "Recettes disponibles :" + chr(10) * 2
+            + context + chr(10) * 2
+            + count_note
+            + "Question de l'utilisateur : " + message
+        )
+        return _call_llm(msg, history)
+
+    if _last_recipe_ids and _LIST_REQUEST_PATTERN.search(message) and not _last_site:
+        list_recipes = database.get_recipes_by_ids(_last_recipe_ids)
+        list_context = format_context(list_recipes)
+        sites_data = database.get_sites_summary()
+        sites_str = "Sources : " + ", ".join(
+            f"{s['site']} ({s['count']} recettes)" for s in sites_data
+        ) + "." + chr(10) * 2
+        msg = (
+            sites_str
+            + "Recettes disponibles :" + chr(10) * 2
+            + list_context + chr(10) * 2
+            + "Question de l'utilisateur : " + message
+        )
+        return _call_llm(msg, history)
 
     if _PDF_OPEN_PATTERN.search(message) and _last_recipe_ids:
         recipe = None
