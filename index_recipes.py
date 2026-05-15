@@ -180,14 +180,35 @@ def _parse_qoqa(pdf_path: Path) -> dict:
     }
 
 
-_FOOBY_DURATION_RE = re.compile(
-    r"(?:(\d+)\s*h(?:eure)?s?\s*)?(\d+)\s*min",
-    re.IGNORECASE,
-)
+def _fooby_ingredients_from_pdf(pdf_path: Path) -> list[str]:
+    """Extrait les ingrédients depuis la colonne gauche du PDF fooby (layout 2 colonnes)."""
+    try:
+        with pdfplumber.open(pdf_path) as p:
+            page = p.pages[0]
+            left = page.within_bbox((0, 0, page.width * 0.45, page.height))
+            text = left.extract_text() or ""
+    except Exception:
+        return []
+
+    ingredients = []
+    in_section = False
+    for line in (l.strip() for l in text.split("\n") if l.strip()):
+        if re.search(r"IL VOUS FAUT", line, re.IGNORECASE):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if re.search(r"^Attention\b|dur[eé]es de pr[eé]paration|adapt[eé]es automatiquement", line, re.IGNORECASE):
+            continue
+        if re.search(r"^Ustensiles$", line, re.IGNORECASE):
+            break
+        ingredients.append(line)
+    return ingredients
 
 
 def _parse_fooby(pdf_path: Path) -> dict:
     text = _extract_text(pdf_path)
+    ingredients = _fooby_ingredients_from_pdf(pdf_path)
 
     # Utiliser le JSON sidecar API si disponible (titre, durée, catégorie fiables)
     json_path = pdf_path.with_suffix(".json")
@@ -195,19 +216,6 @@ def _parse_fooby(pdf_path: Path) -> dict:
         api = json.loads(json_path.read_text("utf-8"))
         total = api.get("dauer_gesamt")
         duration_minutes = int(total) if total and str(total).isdigit() else None
-
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        in_ingredients = False
-        ingredients = []
-        for line in lines:
-            if re.search(r"\bIngr[eé]dients?\b", line, re.IGNORECASE):
-                in_ingredients = True
-                continue
-            if in_ingredients and re.search(r"\bPr[eé]paration\b|\bInstructions?\b|\bM[eé]thode\b", line, re.IGNORECASE):
-                break
-            if in_ingredients and line:
-                ingredients.append(line)
-
         return {
             "title":            api.get("title") or _title_from_filename(pdf_path, "fooby_"),
             "site":             "fooby",
@@ -219,28 +227,15 @@ def _parse_fooby(pdf_path: Path) -> dict:
             "full_text":        text or None,
         }
 
-    # Fallback sans sidecar : tout depuis le texte PDF
+    # Fallback sans sidecar
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     title = lines[0] if lines else _title_from_filename(pdf_path, "fooby_")
-
     duration_minutes = None
-    m = _FOOBY_DURATION_RE.search(text)
+    m = re.search(r"(?:(\d+)\s*h(?:eure)?s?\s*)?(\d+)\s*min", text, re.IGNORECASE)
     if m:
         h = int(m.group(1) or 0)
         mn = int(m.group(2) or 0)
         duration_minutes = h * 60 + mn or None
-
-    in_ingredients = False
-    ingredients = []
-    for line in lines:
-        if re.search(r"\bIngr[eé]dients?\b", line, re.IGNORECASE):
-            in_ingredients = True
-            continue
-        if in_ingredients and re.search(r"\bPr[eé]paration\b|\bInstructions?\b|\bM[eé]thode\b", line, re.IGNORECASE):
-            break
-        if in_ingredients and line:
-            ingredients.append(line)
-
     return {
         "title":            title,
         "site":             "fooby",
