@@ -275,7 +275,7 @@ Uses the internal REST API (`POST /.rest/recipes/v1`) to paginate through all ~7
 Uses Playwright (headless Chromium) to load the JS-rendered recipe list and click "Voir plus" until all links are collected. PDFs are downloaded directly from `https://download.qoqa.ch/fr/posts/{id}.pdf`.
 
 ### fooby.ch
-Uses Playwright to load the recipe list and click "Voir plus" until all ~8 000 links are collected (cached in `cache/fooby_links.json` after the first run). For each recipe, Playwright navigates to the detail page and extracts the native PDF URL — first by looking for a direct `.pdf` link in the HTML, then by clicking the "Imprimer" button if needed. PDFs are downloaded in batches via `--limit`.
+Uses the internal REST API (`GET /hawaii_search.sri`) to collect all ~8 800 recipes in ~55 seconds (paginated via `start`/`num`, cached in `cache/fooby_links.json`). The API response includes recipe metadata (title, total duration, dietary category) saved as a `.json` sidecar alongside each PDF. PDFs are downloaded directly from the predictable URL `https://fooby.ch/bin/coop/fooby/pdfs/recipe.id-{id}.lang-fr.qty-4.pdf` — no Playwright needed. Download rate: ~1–2 seconds per recipe.
 
 ---
 

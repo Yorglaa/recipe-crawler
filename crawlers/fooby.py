@@ -90,7 +90,14 @@ def get_recipe_links(renew: bool = False) -> list[str]:
     return [r["url"] for r in get_recipe_data(renew=renew)]
 
 
-# ── Playwright (PDF uniquement) ────────────────────────────────────────────────
+# ── URL PDF directe ───────────────────────────────────────────────────────────
+
+def _pdf_url_from_id(recipe_id: str, lang: str = "fr") -> str:
+    """Construit l'URL PDF directe depuis le recipe_id (pas de Playwright nécessaire)."""
+    return f"https://fooby.ch/bin/coop/fooby/pdfs/recipe.id-{recipe_id}.lang-{lang}.qty-4.pdf"
+
+
+# ── Playwright (fallback PDF si recipe_id absent) ──────────────────────────────
 
 def _new_page(browser):
     """Page Playwright avec blocage Usercentrics."""
@@ -106,21 +113,46 @@ def _slug_from_url(recipe_url: str) -> str:
     return f"{parts[-2]}-{parts[-1]}" if len(parts) >= 2 else parts[-1]
 
 
-def _find_pdf_url(page, recipe_url: str) -> str | None:
+def _pdf_url_from_html(html: str, base_url: str) -> str | None:
+    m = re.search(r'href="([^"]+\.pdf)"', html)
+    return urljoin(base_url, m.group(1)) if m else None
+
+
+def _find_pdf_url_playwright(recipe_url: str) -> str | None:
+    """Fallback Playwright pour récupérer l'URL PDF (utilisé uniquement si recipe_id absent)."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = _new_page(browser)
+        url = _find_pdf_url_page(page, recipe_url)
+        browser.close()
+    return url
+
+
+def _find_pdf_url_page(page, recipe_url: str) -> str | None:
     """
     Cherche l'URL du PDF depuis la page recette.
-    Stratégie A : lien .pdf direct dans le HTML.
-    Stratégie B : clic sur 'Imprimer' puis recherche du lien PDF.
+    Stratégie 1 : requests direct (pas de Playwright — rapide si lien dans le HTML serveur).
+    Stratégie 2 : Playwright domcontentloaded (si JS nécessaire).
+    Stratégie 3 : clic sur 'Imprimer' puis recherche du lien PDF.
     """
-    page.goto(recipe_url, wait_until="networkidle", timeout=30000)
-    html = page.content()
+    # Stratégie 1 : requête HTTP simple, pas de browser
+    try:
+        r = requests.get(recipe_url, headers=HEADERS, timeout=10)
+        url = _pdf_url_from_html(r.text, recipe_url)
+        if url:
+            logger.debug("PDF via requests : %s", url)
+            return url
+    except requests.RequestException:
+        pass
 
-    # Stratégie A : href direct vers un .pdf
-    m = re.search(r'href="([^"]+\.pdf)"', html)
-    if m:
-        return urljoin(recipe_url, m.group(1))
+    # Stratégie 2 : Playwright avec domcontentloaded (plus rapide que networkidle)
+    page.goto(recipe_url, wait_until="domcontentloaded", timeout=30000)
+    url = _pdf_url_from_html(page.content(), recipe_url)
+    if url:
+        logger.debug("PDF via DOM : %s", url)
+        return url
 
-    # Stratégie B : clic sur le bouton Imprimer
+    # Stratégie 3 : clic sur le bouton Imprimer
     btn = page.query_selector(
         'button:has-text("Imprimer"), a:has-text("Imprimer"), '
         '[data-testid*="print"], [aria-label*="imprimer"], [aria-label*="print"]'
@@ -129,27 +161,28 @@ def _find_pdf_url(page, recipe_url: str) -> str | None:
         logger.warning("Pas de bouton Imprimer sur %s", recipe_url)
         return None
 
-    # Tenter via popup (nouveau tab), sinon navigation dans la même page
     try:
         with page.expect_popup(timeout=5000) as popup_info:
             btn.dispatch_event("click")
         print_page = popup_info.value
         print_page.route(re.compile(r".*usercentrics.*"), lambda route: route.abort())
-        print_page.wait_for_load_state("networkidle", timeout=15000)
+        print_page.wait_for_load_state("domcontentloaded", timeout=15000)
         pdf_link = print_page.query_selector(
             'a[href$=".pdf"], a:has-text("Sauvegarder"), a:has-text("sauvegarder")'
         )
         href = pdf_link.get_attribute("href") if pdf_link else None
         print_page.close()
-        return urljoin(recipe_url, href) if href else None
+        url = urljoin(recipe_url, href) if href else None
     except Exception:
         btn.dispatch_event("click")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(1500)
         pdf_link = page.query_selector(
             'a[href$=".pdf"], a:has-text("Sauvegarder"), a:has-text("sauvegarder")'
         )
         href = pdf_link.get_attribute("href") if pdf_link else None
-        return urljoin(recipe_url, href) if href else None
+        url = urljoin(recipe_url, href) if href else None
+
+    return url
 
 
 def _download_pdf(pdf_url: str, pdf_path: Path) -> bool:
@@ -189,25 +222,25 @@ def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None, renew: boo
         return
 
     downloaded = 0
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = _new_page(browser)
-
-        for item, pdf_path in pending:
-            try:
-                pdf_url = _find_pdf_url(page, item["url"])
-                if not pdf_url:
-                    logger.warning("URL PDF non trouvée : %s", item["url"])
-                    continue
-                if _download_pdf(pdf_url, pdf_path):
-                    pdf_path.with_suffix(".json").write_text(
-                        json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8"
-                    )
-                    downloaded += 1
-                time.sleep(1)
-            except Exception as e:
-                logger.error("Erreur %s : %s", item["url"], e)
-
-        browser.close()
+    for item, pdf_path in pending:
+        try:
+            recipe_id = item.get("recipe_id")
+            if recipe_id:
+                pdf_url = _pdf_url_from_id(recipe_id)
+            else:
+                # Fallback Playwright pour les rares cas sans recipe_id
+                logger.warning("recipe_id absent pour %s — fallback Playwright", item["url"])
+                pdf_url = _find_pdf_url_playwright(item["url"])
+            if not pdf_url:
+                logger.warning("URL PDF non trouvée : %s", item["url"])
+                continue
+            if _download_pdf(pdf_url, pdf_path):
+                pdf_path.with_suffix(".json").write_text(
+                    json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                downloaded += 1
+            time.sleep(0.5)
+        except Exception as e:
+            logger.error("Erreur %s : %s", item["url"], e)
 
     logger.info("Fooby : %d nouveaux PDFs téléchargés", downloaded)
