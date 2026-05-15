@@ -8,6 +8,7 @@ Routing :
   - rag           : tout le reste (recherche semantique)
 """
 
+import logging
 import os
 import platform
 import re
@@ -15,6 +16,8 @@ import subprocess
 import time
 import unicodedata
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from google import genai
 from google.genai import types
@@ -456,6 +459,7 @@ def chat(message: str, history: list[dict]) -> str:
         ref = _extract_list_ref(message)
         if ref is not None:
             idx = ref - 1
+            logger.debug("ref=%s idx=%s len(_last_recipe_ids)=%s", ref, idx, len(_last_recipe_ids))
             if 0 <= idx < len(_last_recipe_ids):
                 recipe = database.get_recipe_by_id(_last_recipe_ids[idx])
                 if recipe:
