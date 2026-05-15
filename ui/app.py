@@ -24,6 +24,7 @@ _PDF_DIRS = {
     "viandesuisse": _ROOT / "pdfs" / "viandesuisse",
     "migusto":      _ROOT / "pdfs" / "migusto",
     "qoqa":         _ROOT / "pdfs" / "qoqa",
+    "fooby":        _ROOT / "pdfs" / "fooby",
 }
 
 
@@ -303,7 +304,7 @@ def build_app() -> gr.Blocks:
                 gr.Markdown("---\n## Crawling")
                 with gr.Row():
                     crawl_sites = gr.CheckboxGroup(
-                        choices=["viandesuisse", "migusto", "qoqa"],
+                        choices=["viandesuisse", "migusto", "qoqa", "fooby"],
                         value=["migusto"],
                         label="Sites",
                     )
@@ -323,8 +324,8 @@ def build_app() -> gr.Blocks:
                 gr.Markdown("---\n## Indexation")
                 with gr.Row():
                     index_sites = gr.CheckboxGroup(
-                        choices=["viandesuisse", "migusto", "qoqa"],
-                        value=["viandesuisse", "migusto", "qoqa"],
+                        choices=["viandesuisse", "migusto", "qoqa", "fooby"],
+                        value=["viandesuisse", "migusto", "qoqa", "fooby"],
                         label="Sites",
                     )
                     with gr.Column():

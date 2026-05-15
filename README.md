@@ -15,6 +15,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 | [viandesuisse.ch](https://viandesuisse.ch/recettes) | ~17 | HTML scraping + native PDF download |
 | [migusto.migros.ch](https://migusto.migros.ch/fr/apercu-des-recettes) | ~7 950 | REST API + schema.org JSON-LD + weasyprint PDF |
 | [qoqa.ch](https://www.qoqa.ch/fr/posts?kind=recipe) | variable | Playwright (JS-rendered list) + native PDF download |
+| [fooby.ch](https://fooby.ch/fr/recettes.html) | ~8 000 | Playwright (infinite scroll) + native PDF download |
 
 ---
 
@@ -217,7 +218,8 @@ Cache files are stored in `./cache/` (gitignored):
 ```
 cache/
 ├── migusto_slugs.json   # list of ~7 950 recipe slugs
-└── qoqa_links.json      # list of recipe URLs
+├── qoqa_links.json      # list of recipe URLs
+└── fooby_links.json     # list of ~8 000 recipe URLs
 ```
 
 ---
@@ -237,7 +239,8 @@ recipe-crawler/
 ├── crawlers/
 │   ├── viandesuisse.py     # viandesuisse.ch crawler
 │   ├── migusto.py          # migusto.migros.ch crawler
-│   └── qoqa.py             # qoqa.ch crawler (Playwright)
+│   ├── qoqa.py             # qoqa.ch crawler (Playwright)
+│   └── fooby.py            # fooby.ch crawler (Playwright, ~8 000 recettes)
 │
 ├── pipeline/
 │   ├── database.py         # SQLite metadata store (thread-safe)
@@ -254,7 +257,8 @@ recipe-crawler/
 └── pdfs/                   # Generated PDFs (gitignored)
     ├── viandesuisse/
     ├── migusto/
-    └── qoqa/
+    ├── qoqa/
+    └── fooby/
 ```
 
 ---
@@ -269,6 +273,9 @@ Uses the internal REST API (`POST /.rest/recipes/v1`) to paginate through all ~7
 
 ### qoqa.ch
 Uses Playwright (headless Chromium) to load the JS-rendered recipe list and click "Voir plus" until all links are collected. PDFs are downloaded directly from `https://download.qoqa.ch/fr/posts/{id}.pdf`.
+
+### fooby.ch
+Uses Playwright to load the recipe list and click "Voir plus" until all ~8 000 links are collected (cached in `cache/fooby_links.json` after the first run). For each recipe, Playwright navigates to the detail page and extracts the native PDF URL — first by looking for a direct `.pdf` link in the HTML, then by clicking the "Imprimer" button if needed. PDFs are downloaded in batches via `--limit`.
 
 ---
 

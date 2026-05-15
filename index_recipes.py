@@ -30,6 +30,7 @@ PDF_DIRS = {
     "viandesuisse": str(_SCRIPT_DIR / "pdfs" / "viandesuisse"),
     "migusto":      str(_SCRIPT_DIR / "pdfs" / "migusto"),
     "qoqa":         str(_SCRIPT_DIR / "pdfs" / "qoqa"),
+    "fooby":        str(_SCRIPT_DIR / "pdfs" / "fooby"),
 }
 
 
@@ -179,10 +180,84 @@ def _parse_qoqa(pdf_path: Path) -> dict:
     }
 
 
+_FOOBY_DURATION_RE = re.compile(
+    r"(?:(\d+)\s*h(?:eure)?s?\s*)?(\d+)\s*min",
+    re.IGNORECASE,
+)
+
+
+def _parse_fooby(pdf_path: Path) -> dict:
+    text = _extract_text(pdf_path)
+
+    # Utiliser le JSON sidecar API si disponible (titre, durée, catégorie fiables)
+    json_path = pdf_path.with_suffix(".json")
+    if json_path.exists():
+        api = json.loads(json_path.read_text("utf-8"))
+        total = api.get("dauer_gesamt")
+        duration_minutes = int(total) if total and str(total).isdigit() else None
+
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        in_ingredients = False
+        ingredients = []
+        for line in lines:
+            if re.search(r"\bIngr[eé]dients?\b", line, re.IGNORECASE):
+                in_ingredients = True
+                continue
+            if in_ingredients and re.search(r"\bPr[eé]paration\b|\bInstructions?\b|\bM[eé]thode\b", line, re.IGNORECASE):
+                break
+            if in_ingredients and line:
+                ingredients.append(line)
+
+        return {
+            "title":            api.get("title") or _title_from_filename(pdf_path, "fooby_"),
+            "site":             "fooby",
+            "pdf_path":         str(pdf_path),
+            "ingredients":      ingredients or None,
+            "duration_minutes": duration_minutes,
+            "category":         api.get("ernaehrungsweise") or None,
+            "description":      None,
+            "full_text":        text or None,
+        }
+
+    # Fallback sans sidecar : tout depuis le texte PDF
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    title = lines[0] if lines else _title_from_filename(pdf_path, "fooby_")
+
+    duration_minutes = None
+    m = _FOOBY_DURATION_RE.search(text)
+    if m:
+        h = int(m.group(1) or 0)
+        mn = int(m.group(2) or 0)
+        duration_minutes = h * 60 + mn or None
+
+    in_ingredients = False
+    ingredients = []
+    for line in lines:
+        if re.search(r"\bIngr[eé]dients?\b", line, re.IGNORECASE):
+            in_ingredients = True
+            continue
+        if in_ingredients and re.search(r"\bPr[eé]paration\b|\bInstructions?\b|\bM[eé]thode\b", line, re.IGNORECASE):
+            break
+        if in_ingredients and line:
+            ingredients.append(line)
+
+    return {
+        "title":            title,
+        "site":             "fooby",
+        "pdf_path":         str(pdf_path),
+        "ingredients":      ingredients or None,
+        "duration_minutes": duration_minutes,
+        "category":         None,
+        "description":      None,
+        "full_text":        text or None,
+    }
+
+
 _PARSERS = {
     "viandesuisse": _parse_viandesuisse,
     "migusto":      _parse_migusto,
     "qoqa":         _parse_qoqa,
+    "fooby":        _parse_fooby,
 }
 
 

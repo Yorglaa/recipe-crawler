@@ -12,6 +12,7 @@ _SITES = {
     "viandesuisse": "crawlers.viandesuisse",
     "migusto":      "crawlers.migusto",
     "qoqa":         "crawlers.qoqa",
+    "fooby":        "crawlers.fooby",
 }
 
 

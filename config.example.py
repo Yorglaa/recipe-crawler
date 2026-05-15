@@ -8,6 +8,7 @@ _ROOT = Path(__file__).parent.resolve()
 VIANDESUISSE_URL = "https://www.viandesuisse.ch/recettes"
 MIGUSTO_URL = "https://www.migusto.ch/fr/recettes"
 QOQA_URL = "https://www.qoqa.ch/fr/recettes"
+FOOBY_URL = "https://fooby.ch/fr/recettes.html?query=&start=0&sort=&filters[treffertyp]=rezepte&y=0&x=0"
 
 # Dossier de sortie des PDFs
 PDF_OUTPUT_DIR = str(_ROOT / "pdfs")
