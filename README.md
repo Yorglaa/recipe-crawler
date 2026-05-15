@@ -143,6 +143,9 @@ Examples:
 - *Toutes les recettes de moins de 30 minutes*
 - *Une bonne soupe reconfortante*
 - *Des recettes de bœuf*
+- *Combien de recettes connais-tu avec du porc ?*
+
+**Count queries** — Ask how many recipes match a given ingredient, category, duration, or site. The bot returns the exact count (SQL-based) and a few examples, so you can then ask *donne moi la liste* or refine the search.
 
 **Detail mode** — Once a recipe is listed, ask for full preparation steps in natural language:
 
