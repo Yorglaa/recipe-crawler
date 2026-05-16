@@ -293,13 +293,20 @@ def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
                 results = rag_rows
                 total_found = len(results)
         elif ingredients:
+            # SQL-first : toutes les recettes contenant l'ingrédient (pas de limite),
+            # classées par pertinence RAG. Les résultats purement sémantiques (hors SQL)
+            # sont écartés car souvent non pertinents pour une recherche par ingrédient.
             ing_rows = database.search_by_ingredient(ingredients[0])
             title_rows = database.search_by_title_keywords([ingredients[0]])
-            seen = {r["id"] for r in rag_rows}
-            extra = [r for r in ing_rows + title_rows if r["id"] not in seen]
-            all_candidates = rag_rows + extra
-            total_found = len(all_candidates)
-            results = all_candidates[:n_results]
+            ing_ids = {r["id"] for r in ing_rows}
+            all_sql = ing_rows + [r for r in title_rows if r["id"] not in ing_ids]
+            if all_sql:
+                rag_ids = {r["id"] for r in rag_rows}
+                total_found = len(all_sql)
+                results = sorted(all_sql, key=lambda r: (0 if r["id"] in rag_ids else 1))[:n_results]
+            else:
+                results = rag_rows
+                total_found = len(results)
         else:
             results = rag_rows
             total_found = len(results)
@@ -522,12 +529,13 @@ def _build_sources_str() -> str:
     ) + ".\n\n"
 
 
-def format_context(recipes: list[dict], detailed: bool = False) -> str:
+def format_context(recipes: list[dict], detailed: bool = False, numbered: bool = False) -> str:
     if not recipes:
         return "Aucune recette trouvee pour cette recherche."
     parts = []
-    for r in recipes:
-        lines = [f"**{r['title']}** ({r['site']})"]
+    for i, r in enumerate(recipes, 1):
+        prefix = f"{i}. " if numbered else ""
+        lines = [f"{prefix}**{r['title']}** ({r['site']})"]
         if r.get("duration_minutes"):
             lines.append(f"Duree : {r['duration_minutes']} min")
         if r.get("category"):
@@ -737,7 +745,12 @@ def chat(message: str, history: list[dict]) -> str:
     recipes, total_found = _search_with_filters(_active_filters)
     _last_recipe_ids = [r["id"] for r in recipes]
 
-    context = format_context(recipes)
+    context = format_context(recipes, numbered=True)
+    num_instruction = (
+        "\n[INSTRUCTION : La liste est numérotée. Reproduis ces numéros quand tu listes "
+        "les recettes. L'utilisateur peut ensuite référencer une recette par son numéro "
+        "(ex: 'recette 3', 'la 5ème').]\n"
+    )
     truncation_note = (
         f"\n[Note : {total_found} recettes correspondent au total, seules les {len(recipes)} plus pertinentes "
         f"sont affichées. Informez l'utilisateur et invitez-le à affiner sa recherche "
@@ -753,6 +766,7 @@ def chat(message: str, history: list[dict]) -> str:
     return _call_llm(
         _build_sources_str()
         + f"Recettes disponibles :\n\n{context}\n\n"
+        + num_instruction
         + duration_note
         + truncation_note
         + f"Question de l'utilisateur : {message}",
