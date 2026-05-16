@@ -1,4 +1,4 @@
-﻿# recipe-crawler
+# recipe-crawler
 
 Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 
@@ -6,7 +6,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 
 - **Crawlers**: BeautifulSoup · REST API · Playwright
 - **Indexer**: pdfplumber · SQLite (metadata) · ChromaDB + sentence-transformers (semantic search)
-- **Chat**: Gemini 2.5 Flash · Groq (llama-3.3-70b, fallback) · Gradio
+- **Chat**: Gemini 2.5 Flash · Gemini 2.5 Flash Lite (fallback) · Groq llama-3.3-70b (fallback) · Gradio
 
 ## Sites supported
 
@@ -15,7 +15,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 | [viandesuisse.ch](https://viandesuisse.ch/recettes) | ~17 | HTML scraping + native PDF download |
 | [migusto.migros.ch](https://migusto.migros.ch/fr/apercu-des-recettes) | ~7 950 | REST API + schema.org JSON-LD + weasyprint PDF |
 | [qoqa.ch](https://www.qoqa.ch/fr/posts?kind=recipe) | variable | Playwright (JS-rendered list) + native PDF download |
-| [fooby.ch](https://fooby.ch/fr/recettes.html) | ~8 000 | Playwright (infinite scroll) + native PDF download |
+| [fooby.ch](https://fooby.ch/fr/recettes.html) | ~8 800 | REST API + JSON sidecar + native PDF download |
 
 ---
 
@@ -25,7 +25,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 - [weasyprint](https://doc.courtbouillon.org/weasyprint/) (+ GTK on Windows — see below)
 - [Playwright](https://playwright.dev/python/) with Chromium (for QoQa)
 - A Gemini API key
-- A Groq API key (optional — used as fallback if Gemini is unavailable)
+- A Groq API key (optional — used as final fallback if Gemini is unavailable)
 
 ### Windows: weasyprint dependencies
 
@@ -56,12 +56,21 @@ Create a `.env` file at the root of the project:
 
 ```
 GEMINI_API_KEY=your-gemini-key-here
-GROQ_API_KEY=your-groq-key-here      # optional — fallback only
+GROQ_API_KEY=your-groq-key-here      # optional — final fallback only
 ```
 
 `config.py` loads this file automatically via `python-dotenv`. The `.env` file is gitignored — never commit it.
 
-All other settings (`CHROMA_DB_PATH`, `SQLITE_DB_PATH`, `EMBEDDING_MODEL`, `GEMINI_MODEL`, `GROQ_MODEL`) are defined in `config.py` with sensible defaults.
+All other settings are defined in `config.py` with sensible defaults:
+
+| Setting | Default | Description |
+|---|---|---|
+| `CHROMA_DB_PATH` | `./chromadb` | ChromaDB vector store directory |
+| `SQLITE_DB_PATH` | `./recipes.db` | SQLite metadata database |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Primary LLM |
+| `GEMINI_FALLBACK_MODEL` | `gemini-2.5-flash-lite` | Gemini fallback if primary fails |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Final fallback (requires `GROQ_API_KEY`) |
 
 ---
 
@@ -77,7 +86,7 @@ python main.py [--sites SITE [SITE ...]] [--limit N] [--renew] [--index]
 
 | Option | Description |
 |---|---|
-| `--sites` | `viandesuisse`, `migusto`, `qoqa`, or `all` (default: `all`) |
+| `--sites` | `viandesuisse`, `migusto`, `qoqa`, `fooby`, or `all` (default: `all`) |
 | `--limit N` | Download at most **N new** recipes per site |
 | `--renew` | Ignore local link/slug cache and re-fetch from source |
 | `--index` | Also run the indexer (SQLite + ChromaDB) after crawling |
@@ -91,14 +100,14 @@ python main.py --sites migusto --limit 10
 # Crawl all sites with no limit
 python main.py
 
-# Crawl and immediately index
-python main.py --sites migusto --limit 50 --index
+# Crawl fooby and immediately index
+python main.py --sites fooby --limit 100 --index
 ```
 
 ### 2. Index — build SQLite + ChromaDB
 
 ```
-python index_recipes.py [--sites SITE [SITE ...]] [--limit N] [--sync-embeddings]
+python index_recipes.py [--sites SITE [SITE ...]] [--limit N] [--sync-embeddings] [--backfill-text]
 ```
 
 Reads existing PDFs from disk, extracts metadata, and loads everything into SQLite and ChromaDB. Safe to re-run — already-indexed recipes are skipped.
@@ -108,13 +117,14 @@ Reads existing PDFs from disk, extracts metadata, and loads everything into SQLi
 | `--sites` | Sites to index (default: all) |
 | `--limit N` | Index at most **N new** recipes per site |
 | `--sync-embeddings` | Add to ChromaDB any recipe already in SQLite but missing an embedding |
+| `--backfill-text` | Populate `full_text` for already-indexed recipes that are missing it |
 
 ```bash
 # Index everything
 python index_recipes.py
 
-# Index only the next 200 qoqa recipes
-python index_recipes.py --sites qoqa --limit 200
+# Index only the next 200 fooby recipes
+python index_recipes.py --sites fooby --limit 200
 
 # Fix a SQLite / ChromaDB mismatch without re-crawling
 python index_recipes.py --sync-embeddings
@@ -146,6 +156,23 @@ Examples:
 - *Des recettes de bœuf*
 - *Combien de recettes connais-tu avec du porc ?*
 
+**Progressive refinement** — The bot maintains active filters across turns. Each refinement narrows the current context without losing previous constraints:
+
+```
+"curry"                          → results filtered by keyword
+"avec du poulet"                 → curry + poulet (SQL intersection)
+"en moins de 45 min"             → curry + poulet + ≤ 45 min
+"de chez migusto"                → curry + poulet + ≤ 45 min + site migusto
+```
+
+Filters reset only when you start a **Nouvelle conversation** or ask a clearly unrelated question.
+
+**Numbered list navigation** — Results are presented as a numbered list. Reference any recipe by its number:
+
+- *recette 3* — view full details
+- *pdf de la recette 5* — open the PDF directly
+- *détaille la 2* — show full preparation steps
+
 **Count queries** — Ask how many recipes match a given ingredient, category, duration, or site. The bot returns the exact count (SQL-based) and a few examples, so you can then ask *donne moi la liste* or refine the search.
 
 **Detail mode** — Once a recipe is listed, ask for full preparation steps in natural language:
@@ -156,7 +183,14 @@ Examples:
 
 Detail mode works even after a **Nouvelle conversation** reset or when the recipe was mentioned in an earlier turn — the bot searches the full database by title keywords if the recipe is not in the current context.
 
-**Nouvelle conversation** resets the chat history and the recipe context, starting fresh without restarting the server.
+**LLM fallback chain** — The chat uses three models in order:
+1. **Gemini 2.5 Flash** (primary) — fast, high quality
+2. **Gemini 2.5 Flash Lite** (fallback) — if primary is unavailable
+3. **Groq llama-3.3-70b** (final fallback) — if both Gemini models fail; requires `GROQ_API_KEY`
+
+All three models apply the same system prompt and formatting rules (numbered lists, French, source attribution).
+
+**Nouvelle conversation** resets the chat history and all active filters, starting fresh without restarting the server.
 
 Both tabs have a **Fermer l'application** button that shuts down the server.
 
@@ -190,8 +224,8 @@ python run_batch.py [--sites SITE [SITE ...]] [--batch-size N] [--delay SEC] [--
 | `--renew` | — | Re-fetch link/slug list on first batch |
 
 ```bash
-# Crawl migusto in batches of 100
-python run_batch.py --sites migusto --batch-size 100 --delay 60
+# Crawl fooby in batches of 100
+python run_batch.py --sites fooby --batch-size 100 --delay 30
 
 # After crawling, index everything
 python index_recipes.py
@@ -199,11 +233,12 @@ python index_recipes.py
 
 ---
 
-## Cache (migusto and qoqa)
+## Cache (migusto, qoqa, fooby)
 
 Collecting the full recipe list is expensive:
 - **migusto** requires ~330 paginated API calls to enumerate ~7 950 slugs
 - **qoqa** requires a full Playwright session to click through "Voir plus"
+- **fooby** requires ~45 paginated API calls (~55 seconds, ~8 800 recipes)
 
 The list is cached locally as JSON after the first fetch.
 
@@ -219,7 +254,7 @@ Cache files are stored in `./cache/` (gitignored):
 cache/
 ├── migusto_slugs.json   # list of ~7 950 recipe slugs
 ├── qoqa_links.json      # list of recipe URLs
-└── fooby_links.json     # list of ~8 000 recipe URLs
+└── fooby_links.json     # list of ~8 800 recipe records (id, url, title, duration...)
 ```
 
 ---
@@ -269,19 +304,20 @@ recipe-crawler/
 │   ├── viandesuisse.py     # viandesuisse.ch crawler
 │   ├── migusto.py          # migusto.migros.ch crawler
 │   ├── qoqa.py             # qoqa.ch crawler (Playwright)
-│   └── fooby.py            # fooby.ch crawler (Playwright, ~8 000 recettes)
+│   └── fooby.py            # fooby.ch crawler (REST API, ~8 800 recettes)
 │
 ├── pipeline/
 │   ├── database.py         # SQLite metadata store (thread-safe)
 │   ├── embeddings.py       # ChromaDB vector store (offline, HF_HUB_OFFLINE=1)
-│   └── chat.py             # Query router + Gemini chat (Groq fallback)
+│   └── chat.py             # Query router + progressive filters + Gemini/Groq chat
 │
 ├── ui/
 │   └── app.py              # Gradio interface: Chat + Admin tabs
 │
 ├── cache/                  # Auto-generated link/slug lists (gitignored)
 │   ├── migusto_slugs.json
-│   └── qoqa_links.json
+│   ├── qoqa_links.json
+│   └── fooby_links.json
 │
 └── pdfs/                   # Generated PDFs (gitignored)
     ├── viandesuisse/
@@ -324,3 +360,35 @@ All text comparisons (query routing, ingredient search, detail-mode title matchi
 - Lowercases
 
 This ensures that `bœuf` / `boeuf` and `œuf` / `oeuf` are treated as identical by both the router and the SQL `LIKE` ingredient search (which also tries both forms).
+
+---
+
+## Query routing and search architecture
+
+The chatbot routes each query through one of four paths before calling the LLM:
+
+| Route | Trigger | Strategy |
+|---|---|---|
+| `sql_duration` | Duration only (*en moins de 30 min*) | SQL filter by `duration_minutes` |
+| `sql_category` | Category keyword (*soupe*, *dessert*…) | SQL `LIKE` on `category` |
+| `hybrid` | Ingredient + duration/category | SQL intersection, ranked by RAG |
+| `rag` | Everything else | Semantic search (ChromaDB) + SQL ingredient boost |
+
+### Progressive refinement (`_active_filters`)
+
+Active filters persist across conversation turns as a structured dict:
+
+```python
+{
+    "query":       "curry",        # base query for RAG ranking
+    "ingredients": ["poulet"],     # SQL hard filters — intersection
+    "max_minutes": 45,             # SQL hard filter
+    "site":        "migusto",      # SQL hard filter
+}
+```
+
+Each refinement message (starting with *avec*, *et du*, *en moins de*, *de chez*…) updates only the relevant field without clearing the others. A new unrelated question resets all filters.
+
+### Ingredient matching
+
+Ingredient filters use title-first matching: `search_by_title_keywords` is preferred over `search_by_ingredient` to avoid false positives (e.g. "fond de boeuf" in a pork recipe). The ingredient list is used as fallback only when no title match is found.
