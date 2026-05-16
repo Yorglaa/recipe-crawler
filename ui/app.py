@@ -226,21 +226,7 @@ _JS = """
         styleSubmitBtn(findSubmitBtn());
     }
 
-    function setupAutoFocus() {
-        function tryAttach() {
-            const chatbot = document.querySelector(".chatbot");
-            if (!chatbot) { setTimeout(tryAttach, 500); return; }
-            let debounce = null;
-            new MutationObserver(() => {
-                clearTimeout(debounce);
-                debounce = setTimeout(() => {
-                    const ta = document.querySelector("textarea");
-                    if (ta && document.activeElement !== ta) ta.focus();
-                }, 300);
-            }).observe(chatbot, { childList: true, subtree: true, characterData: true });
-        }
-        tryAttach();
-    }
+    function setupAutoFocus() { /* désactivé */ }
 
     setTimeout(() => {
         applyStyles();

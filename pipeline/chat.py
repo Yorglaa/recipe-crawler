@@ -8,9 +8,12 @@ Routing de recherche :
   - rag           : tout le reste (recherche sémantique + SQL supplémentaire)
 
 Affinement progressif (_active_filters) :
-  - query : requête accumulée entre les tours (ingrédients, durée, mots-clés)
-  - site  : filtre site appliqué en post-search
-  Ex: "agneau" → "de chez qoqa" → "en moins de 45 min" conserve tous les filtres.
+  - query       : requête de base (pour le ranking RAG sémantique)
+  - ingredients : liste d'ingrédients requis (filtre SQL dur — intersection)
+  - max_minutes : durée max en minutes (filtre SQL dur)
+  - site        : filtre site (filtre dur)
+  Ex: "curry" → "avec du poulet" → "en moins de 45 min" → "de chez migusto"
+  conserve tous les filtres. Chaque recette retournée respecte toutes les contraintes.
 """
 
 import logging
@@ -37,8 +40,8 @@ _last_disambig_titles: list[str] = []
 _last_site: str | None = None
 
 # Filtres de recherche persistants entre les tours.
-# query : requête textuelle accumulée ; site : filtre post-search.
-_active_filters: dict = {"query": "", "site": None}
+# query : requête de base (RAG) ; ingredients/max_minutes/site : filtres SQL durs.
+_active_filters: dict = {"query": "", "ingredients": [], "site": None, "max_minutes": None}
 
 DISAMBIG_MARKER = "Plusieurs recettes correspondent"
 _DISAMBIG_MARKER = DISAMBIG_MARKER  # alias interne
@@ -49,7 +52,7 @@ def reset_context() -> None:
     _last_recipe_ids = []
     _last_disambig_titles = []
     _last_site = None
-    _active_filters = {"query": "", "site": None}
+    _active_filters = {"query": "", "ingredients": [], "site": None, "max_minutes": None}
 
 
 _SYSTEM_PROMPT = """Tu es un assistant culinaire francophone specialise dans les recettes de cuisine.
@@ -59,6 +62,8 @@ Quand plusieurs recettes correspondent a la demande, liste-les toutes avec leur 
 Pour chaque recette que tu mentionnes, indique TOUJOURS sa provenance entre parentheses apres le titre,
 en utilisant exactement le nom du site tel qu'il apparait dans le contexte : viandesuisse, qoqa, migusto ou fooby.
 Exemple : "Poulet roti aux herbes (viandesuisse) — 45 min".
+REGLE DE FORMATAGE ABSOLUE : quand les recettes sont fournies sous forme de liste numerotee (1. 2. 3. ...),
+reproduis cette liste EXACTEMENT avec ses numeros, dans le meme ordre, sans reformater ni utiliser de puces (*).
 Si aucune recette pertinente n'est disponible, dis-le honnetement et propose une piste generale.
 Ne mentionne jamais les noms de fichiers PDF ni les identifiants techniques.
 N'hesite pas a interagir avec l'utilisateur : pose des questions de precision si la demande est vague
@@ -321,12 +326,54 @@ def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
 
 
 def _search_with_filters(filters: dict, n_results: int = 20) -> tuple[list[dict], int]:
-    """search_recipes + filtre site post-search si actif.
-    Augmente n_results en amont pour compenser la réduction du filtre site."""
-    broad_n = 300 if filters.get("site") else n_results
-    results, total = search_recipes(filters["query"], n_results=broad_n)
-    if filters.get("site"):
-        results = [r for r in results if r["site"] == filters["site"]]
+    """Applique les filtres durs (ingrédients, durée, site) puis rank par RAG.
+
+    Garantit que chaque résultat respecte TOUTES les contraintes SQL actives.
+    Le RAG est utilisé uniquement pour le classement, jamais comme filtre.
+    """
+    query = filters["query"]
+    ingredients: list[str] = filters.get("ingredients") or []
+    site: str | None = filters.get("site")
+    max_minutes: int | None = filters.get("max_minutes")
+
+    # ── Construire l'ensemble des IDs contraints par SQL ─────────────────────
+    constrained_ids: set[int] | None = None
+
+    if ingredients:
+        ing_ids: set[int] | None = None
+        for ing in ingredients:
+            # Priorité au titre (ingrédient principal fiable).
+            # Fallback sur la liste d'ingrédients seulement si le titre ne donne rien
+            # — évite les faux positifs du type "fond de boeuf" dans une recette de porc.
+            title_ids = {r["id"] for r in database.search_by_title_keywords([ing])}
+            ids = title_ids if title_ids else {r["id"] for r in database.search_by_ingredient(ing)}
+            ing_ids = ids if ing_ids is None else ing_ids & ids
+        constrained_ids = ing_ids if ing_ids is not None else set()
+
+    if max_minutes:
+        dur_ids = {r["id"] for r in database.search_by_duration(max_minutes)}
+        constrained_ids = constrained_ids & dur_ids if constrained_ids is not None else dur_ids
+
+    # ── Chemin contraint : toutes les recettes SQL + ranking RAG ─────────────
+    if constrained_ids is not None:
+        if not constrained_ids:
+            return [], 0
+        all_matching = database.get_recipes_by_ids(list(constrained_ids))
+        if site:
+            all_matching = [r for r in all_matching if r["site"] == site]
+        if not all_matching:
+            return [], 0
+        rag_rows = _rag(query, n_results)
+        rag_ids = {r["id"] for r in rag_rows}
+        total_found = len(all_matching)
+        results = sorted(all_matching, key=lambda r: (0 if r["id"] in rag_ids else 1))[:n_results]
+        return results, total_found
+
+    # ── Chemin libre : routing complet via search_recipes ────────────────────
+    broad_n = 300 if site else n_results
+    results, total = search_recipes(query, n_results=broad_n)
+    if site:
+        results = [r for r in results if r["site"] == site]
         total = len(results)
     return results[:n_results], total
 
@@ -682,12 +729,12 @@ def chat(message: str, history: list[dict]) -> str:
                 candidates = [r for r in ctx_recipes if _normalize(r["title"]) in q_last]
             if len(candidates) == 1:
                 recipe = candidates[0]
-            elif 1 < len(candidates) <= 5:
+            elif 1 < len(candidates) <= 10:
                 lines = [
                     f"{i + 1}. **{r['title']}** ({r['site']})" for i, r in enumerate(candidates)
                 ]
                 return "Plusieurs recettes correspondent — tapez le numéro :\n\n" + "\n".join(lines)
-            elif len(candidates) > 5:
+            elif len(candidates) > 10:
                 return "Le contexte est encore trop large. Affinez d'abord votre recherche, puis redemandez le PDF."
         if recipe:
             pdf = recipe["pdf_path"]
@@ -738,18 +785,33 @@ def chat(message: str, history: list[dict]) -> str:
     if is_site_refinement:
         _active_filters["site"] = site_in_msg
     elif _REFINE_PATTERN.match(message) and _active_filters["query"]:
-        _active_filters["query"] += " " + message.strip()
+        # Raffinement : parse les nouveaux ingrédients et/ou la durée du message
+        new_ings = _extract_ingredients(_normalize(message))
+        new_minutes = _extract_minutes(message)
+        for ing in new_ings:
+            if ing not in _active_filters["ingredients"]:
+                _active_filters["ingredients"].append(ing)
+        if new_minutes:
+            _active_filters["max_minutes"] = new_minutes
     else:
-        _active_filters = {"query": message, "site": None}
+        # Nouvelle recherche : extraire d'emblée ingrédients et durée comme filtres durs
+        q_norm = _normalize(message)
+        _active_filters = {
+            "query": message,
+            "ingredients": _extract_ingredients(q_norm),
+            "site": None,
+            "max_minutes": _extract_minutes(message),
+        }
 
     recipes, total_found = _search_with_filters(_active_filters)
     _last_recipe_ids = [r["id"] for r in recipes]
 
-    context = format_context(recipes, numbered=True)
+    context = _numbered_site_list(recipes)
     num_instruction = (
-        "\n[INSTRUCTION : La liste est numérotée. Reproduis ces numéros quand tu listes "
-        "les recettes. L'utilisateur peut ensuite référencer une recette par son numéro "
-        "(ex: 'recette 3', 'la 5ème').]\n"
+        "\n[INSTRUCTION ABSOLUE : La liste ci-dessus est numérotée 1. 2. 3. etc. "
+        "Reproduis-la EXACTEMENT telle quelle avec ses numéros, dans le même ordre. "
+        "N'utilise PAS de puces (*). Ne réordonne PAS les recettes. Ne reformate PAS. "
+        "L'utilisateur référence les recettes par numéro (ex: 'recette 3', 'la 5').]\n"
     )
     truncation_note = (
         f"\n[Note : {total_found} recettes correspondent au total, seules les {len(recipes)} plus pertinentes "
@@ -757,7 +819,7 @@ def chat(message: str, history: list[dict]) -> str:
         f"(ingrédient, durée, catégorie, site...).]\n"
         if total_found > len(recipes) else ""
     )
-    duration_minutes = _extract_minutes(message)
+    duration_minutes = _active_filters.get("max_minutes")
     duration_note = (
         f"\n[Note : Toutes les recettes ci-dessous ont une durée de préparation "
         f"de {duration_minutes} minutes ou moins — elles sont toutes filtrées par durée.]\n"
