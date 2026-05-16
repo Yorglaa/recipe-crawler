@@ -224,6 +224,34 @@ cache/
 
 ---
 
+## PDF compression (qoqa)
+
+qoqa PDFs are native high-resolution documents (~2 MB each). A Ghostscript-based
+utility reduces them by ~89% without affecting text extraction or PDF display.
+
+**Prerequisite:** [Ghostscript](https://ghostscript.com/releases/gsdnld.html) installed (Windows: `gswin64c` in PATH).
+
+```bash
+# Dry-run: measure gain without modifying files
+python compress_pdfs.py --site qoqa --dry-run --limit 10
+
+# Full compression with text verification (no backup kept)
+python compress_pdfs.py --site qoqa --no-backup --verify
+```
+
+| Option | Description |
+|---|---|
+| `--site` | `qoqa`, `migusto`, `viandesuisse`, `fooby` |
+| `--quality` | `/screen` (72 dpi) · `/ebook` (150 dpi, default) · `/printer` (300 dpi) |
+| `--dry-run` | Simulate only — no files modified |
+| `--limit N` | Process only N files |
+| `--no-backup` | Replace in place (no `.bak` kept) |
+| `--verify` | Check pdfplumber can still extract text after compression |
+
+Typical result on qoqa: **4 346 MB → 468 MB (−89%)**.
+
+---
+
 ## Project structure
 
 ```
@@ -234,6 +262,7 @@ recipe-crawler/
 ├── main.py                 # Crawl PDFs (+ optional --index)
 ├── index_recipes.py        # Standalone indexer: PDFs -> SQLite + ChromaDB
 ├── run_batch.py            # Production runner: loops main.py until done
+├── compress_pdfs.py        # PDF size reduction via Ghostscript (~89% on qoqa)
 ├── start_app.bat           # Windows launcher (uses venv automatically)
 │
 ├── crawlers/
