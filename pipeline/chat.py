@@ -139,7 +139,7 @@ def _extract_ingredients(normalized_query: str) -> list[str]:
     )
     ingredients = [first.group(1)] if first else []
     extras = re.findall(
-        r"\bet\s+(?:de\s+l[' ]?|du\s+|de\s+la\s+|des\s+|au?\s+|aux\s+)([a-z]{3,})",
+        r"\bet\s+(?:avec\s+)?(?:de\s+l[' ]?|du\s+|de\s+la\s+|des\s+|au?\s+|aux\s+)([a-z]{3,})",
         normalized_query,
     )
     for ing in extras:
@@ -380,7 +380,7 @@ _KNOWN_SITES = {"viandesuisse", "qoqa", "migusto", "fooby"}
 _REFINE_PATTERN = re.compile(
     r"^\s*(?:"
     r"avec\b|sans\b"
-    r"|et\s+(?:du|de\s+la|des|aussi)\b"
+    r"|et\s+(?:du|de\s+la|des|aussi|avec)\b"
     r"|mais\s+(?:sans|avec)\b"
     r"|aussi\s+avec\b"
     r"|en\s+moins\b"
