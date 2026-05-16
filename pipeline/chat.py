@@ -526,7 +526,7 @@ def _extract_list_ref(message: str) -> int | None:
     """Extrait un numéro de référence à la liste précédente (1-based), ou None."""
     if re.match(r"^\s*(\d+)\s*$", message):
         return int(re.match(r"^\s*(\d+)\s*$", message).group(1))
-    m = re.search(r"(?:recette|num[eé]ro|n[o°]\.?)\s*(\d+)", message, re.IGNORECASE)
+    m = re.search(r"(?:recette|num[eé]ro|n[o°]\.?|pdf)\s*(\d+)", message, re.IGNORECASE)
     if m:
         return int(m.group(1))
     return None
@@ -643,6 +643,7 @@ def chat(message: str, history: list[dict]) -> str:
                 recipe = _get_by_title(_last_disambig_titles[idx])
                 recipes = [recipe] if recipe else []
                 if recipes:
+                    _last_recipe_ids = [recipe["id"]]
                     context = format_context(recipes, detailed=True)
                     return _call_llm(
                         f"Recettes disponibles :\n\n{context}\n\n{_DETAIL_INSTRUCTION}"
@@ -658,6 +659,7 @@ def chat(message: str, history: list[dict]) -> str:
             if 0 <= idx < len(_last_recipe_ids):
                 recipe = database.get_recipe_by_id(_last_recipe_ids[idx])
                 if recipe:
+                    _last_recipe_ids = [recipe["id"]]
                     context = format_context([recipe], detailed=True)
                     return _call_llm(
                         f"Recettes disponibles :\n\n{context}\n\n{_DETAIL_INSTRUCTION}"
