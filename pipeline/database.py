@@ -133,9 +133,19 @@ def get_recipes_by_ids(recipe_ids: list[int]) -> list[dict]:
 
 
 def _ligature_variants(term: str) -> list[str]:
-    """Génère les variantes oe↔œ et ae↔æ pour un terme normalisé."""
+    """Génère les variantes ligatures/umlauts et forme sans 's' final (pluriels FR/DE).
+
+    Mappings :
+      oe ↔ œ  (ex: boeuf ↔ bœuf)
+      ae ↔ æ  (ligature AE)
+      ae ↔ ä  (romanisation umlaut allemand : spaetzli ↔ spätzli)
+      oe ↔ ö  (romanisation umlaut allemand)
+      ue ↔ ü  (romanisation umlaut allemand)
+    """
     variants = {term}
-    for a, b in (("oe", "œ"), ("ae", "æ")):
+    if len(term) > 4 and term.endswith("s"):
+        variants.add(term[:-1])
+    for a, b in (("oe", "œ"), ("ae", "æ"), ("ae", "ä"), ("oe", "ö"), ("ue", "ü")):
         expanded = set()
         for v in variants:
             expanded.add(v.replace(a, b))

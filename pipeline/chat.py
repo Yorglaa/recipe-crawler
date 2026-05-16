@@ -313,8 +313,26 @@ def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
                 results = rag_rows
                 total_found = len(results)
         else:
-            results = rag_rows
-            total_found = len(results)
+            # Pas d'ingrédient structuré : compléter le RAG par une recherche SQL titre
+            # (gère les mots-clés nus comme "spaetzlis", "involtini", "risotto", etc.)
+            kws = [
+                w for w in re.split(r"[\s']+", q)
+                if len(w) >= 4 and w not in _FILLER | _NON_INGREDIENTS
+            ]
+            if kws:
+                title_rows = database.search_by_title_keywords(kws[:2])
+                if title_rows:
+                    rag_ids = {r["id"] for r in rag_rows}
+                    total_found = len(title_rows)
+                    results = sorted(
+                        title_rows, key=lambda r: (0 if r["id"] in rag_ids else 1)
+                    )[:n_results]
+                else:
+                    results = rag_rows
+                    total_found = len(results)
+            else:
+                results = rag_rows
+                total_found = len(results)
 
     # Réinjecter les recettes précédentes SEULEMENT si la recherche n'a rien trouvé
     if not results and _last_recipe_ids:
