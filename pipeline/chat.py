@@ -384,6 +384,43 @@ def _extract_list_ref(message: str) -> int | None:
     return None
 
 
+def _numbered_site_list(recipes: list[dict]) -> str:
+    """Construit une liste numérotée compacte (titre + durée) pour un listing par site."""
+    lines = []
+    for i, r in enumerate(recipes, 1):
+        line = f"{i}. **{r['title']}** ({r['site']})"
+        if r.get("duration_minutes"):
+            line += f" — {r['duration_minutes']} min"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _build_site_listing_msg(site: str, all_site: list[dict], user_message: str) -> str:
+    sites = database.get_sites_summary()
+    sites_str = "Sources : " + ", ".join(
+        f"{s['site']} ({s['count']} recettes)" for s in sites
+    ) + ".\n\n"
+    site_context = _numbered_site_list(all_site[:50])
+    trunc = (
+        f"\n[Note : {len(all_site)} recettes au total pour {site}, "
+        f"50 premières affichées. L'utilisateur peut demander 'les suivantes'.]\n"
+        if len(all_site) > 50 else ""
+    )
+    num_instruction = (
+        "\n[INSTRUCTION : La liste ci-dessus est numérotée. "
+        "Reproduis-la telle quelle avec les numéros. "
+        "L'utilisateur peut référencer une recette par son numéro (ex: 'recette 3', 'la 15').]\n"
+    )
+    return (
+        sites_str
+        + "Recettes disponibles :\n\n"
+        + site_context + "\n"
+        + trunc
+        + num_instruction
+        + "Question de l'utilisateur : " + user_message
+    )
+
+
 def format_context(recipes: list[dict], detailed: bool = False) -> str:
     if not recipes:
         return "Aucune recette trouvee pour cette recherche."
@@ -479,23 +516,7 @@ def chat(message: str, history: list[dict]) -> str:
     if _last_site and _SHOW_ALL_PATTERN.search(message):
         all_site = database.search_by_site(_last_site)
         _last_recipe_ids = [r['id'] for r in all_site]
-        site_context = format_context(all_site[:50])
-        sites = database.get_sites_summary()
-        sites_str = 'Sources : ' + ', '.join(
-            f"{s['site']} ({s['count']} recettes)" for s in sites
-        ) + '.' + chr(10) * 2
-        trunc = (
-            f"\n[Note : {len(all_site)} recettes au total pour {_last_site}, "
-            f"50 premières affichées. L'utilisateur peut demander 'les suivantes'.]\n"
-            if len(all_site) > 50 else ""
-        )
-        msg = (
-            sites_str
-            + 'Recettes disponibles :' + chr(10) * 2
-            + site_context + chr(10) * 2
-            + trunc
-            + "Question de l'utilisateur : " + message
-        )
+        msg = _build_site_listing_msg(_last_site, all_site, message)
         return _call_llm(msg, history)
 
     site = _extract_site(message)
@@ -504,23 +525,7 @@ def chat(message: str, history: list[dict]) -> str:
         _last_site = site
         all_site = database.search_by_site(site)
         _last_recipe_ids = [r['id'] for r in all_site]
-        site_context = format_context(all_site[:50])
-        sites = database.get_sites_summary()
-        sites_str = 'Sources : ' + ', '.join(
-            f"{s['site']} ({s['count']} recettes)" for s in sites
-        ) + '.' + chr(10) * 2
-        trunc = (
-            f"\n[Note : {len(all_site)} recettes au total pour {site}, "
-            f"50 premières affichées. L'utilisateur peut demander 'les suivantes'.]\n"
-            if len(all_site) > 50 else ""
-        )
-        msg = (
-            sites_str
-            + 'Recettes disponibles :' + chr(10) * 2
-            + site_context + chr(10) * 2
-            + trunc
-            + "Question de l'utilisateur : " + message
-        )
+        msg = _build_site_listing_msg(site, all_site, message)
         return _call_llm(msg, history)
 
     if _COUNT_PATTERN.search(message):
