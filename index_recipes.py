@@ -89,6 +89,10 @@ _VS_DURATION_RE = re.compile(
     r"Dur[eé]e totale\s*:\s*(?:(\d+)\s*h(?:eure)?s?\s*)?(\d+)?\s*min",
     re.IGNORECASE,
 )
+_VS_TITLE_STOP = re.compile(
+    r"^(Dur[eé]e|Temps actif|Facile|Moyen|Difficile|Expert|Ingr[eé]dients|Pr[eé]paration|\d+\s+personnes)",
+    re.IGNORECASE,
+)
 _VS_NUTR_SKIP = re.compile(
     r"kcal|prot[eé]ines?|glucides?|lipides?|sans gluten|sans lactose"
     r"|une portion|contient|valeurs nutritives|viandesuisse\.ch",
@@ -99,7 +103,12 @@ _VS_NUTR_SKIP = re.compile(
 def _parse_viandesuisse(pdf_path: Path) -> dict:
     text = _extract_text(pdf_path)
     lines = [l.strip() for l in text.split("\n") if l.strip()]
-    title = lines[0] if lines else _title_from_filename(pdf_path, "viandesuisse_")
+    title_parts = []
+    for line in lines:
+        if _VS_TITLE_STOP.match(line):
+            break
+        title_parts.append(line)
+    title = " ".join(title_parts) if title_parts else _title_from_filename(pdf_path, "viandesuisse_")
 
     duration_minutes = None
     m = _VS_DURATION_RE.search(text)
