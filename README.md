@@ -4,7 +4,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 
 ## Stack
 
-- **Crawlers**: BeautifulSoup · REST API · Playwright
+- **Crawlers**: GraphQL API · REST API · Playwright · BeautifulSoup
 - **Indexer**: pdfplumber · SQLite (metadata) · ChromaDB + sentence-transformers (semantic search)
 - **Chat**: Gemini 2.5 Flash · Gemini 2.5 Flash Lite (fallback) · Groq llama-3.3-70b (fallback) · Gradio
 
@@ -12,7 +12,7 @@ Crawl recipe websites, generate PDFs, and query them with a local RAG chatbot.
 
 | Site | Recipes | Method |
 |---|---|---|
-| [viandesuisse.ch](https://viandesuisse.ch/recettes) | ~17 | HTML scraping + native PDF download |
+| [viandesuisse.ch](https://viandesuisse.ch/recettes) | ~620 | GraphQL API + native PDF download |
 | [migusto.migros.ch](https://migusto.migros.ch/fr/apercu-des-recettes) | ~7 950 | REST API + schema.org JSON-LD + weasyprint PDF |
 | [qoqa.ch](https://www.qoqa.ch/fr/posts?kind=recipe) | variable | Playwright (JS-rendered list) + native PDF download |
 | [fooby.ch](https://fooby.ch/fr/recettes.html) | ~8 800 | REST API + JSON sidecar + native PDF download |
@@ -233,12 +233,13 @@ python index_recipes.py
 
 ---
 
-## Cache (migusto, qoqa, fooby)
+## Cache (viandesuisse, migusto, qoqa, fooby)
 
-Collecting the full recipe list is expensive:
-- **migusto** requires ~330 paginated API calls to enumerate ~7 950 slugs
-- **qoqa** requires a full Playwright session to click through "Voir plus"
-- **fooby** requires ~45 paginated API calls (~55 seconds, ~8 800 recipes)
+Collecting the full recipe list can be slow or expensive:
+- **viandesuisse** — 1 GraphQL POST call (~620 recipes); cached for convenience
+- **migusto** — ~330 paginated API calls to enumerate ~7 950 slugs
+- **qoqa** — full Playwright session clicking "Voir plus" until exhausted
+- **fooby** — ~45 paginated API calls (~55 seconds, ~8 800 recipes)
 
 The list is cached locally as JSON after the first fetch.
 
@@ -252,9 +253,10 @@ Cache files are stored in `./cache/` (gitignored):
 
 ```
 cache/
-├── migusto_slugs.json   # list of ~7 950 recipe slugs
-├── qoqa_links.json      # list of recipe URLs
-└── fooby_links.json     # list of ~8 800 recipe records (id, url, title, duration...)
+├── viandesuisse_links.json  # list of ~620 recipe URLs
+├── migusto_slugs.json       # list of ~7 950 recipe slugs
+├── qoqa_links.json          # list of recipe URLs
+└── fooby_links.json         # list of ~8 800 recipe records (id, url, title, duration...)
 ```
 
 ---
@@ -315,6 +317,7 @@ recipe-crawler/
 │   └── app.py              # Gradio interface: Chat + Admin tabs
 │
 ├── cache/                  # Auto-generated link/slug lists (gitignored)
+│   ├── viandesuisse_links.json
 │   ├── migusto_slugs.json
 │   ├── qoqa_links.json
 │   └── fooby_links.json
@@ -331,7 +334,7 @@ recipe-crawler/
 ## Crawler details
 
 ### viandesuisse.ch
-Scrapes the paginated recipe list with BeautifulSoup, then fetches each recipe page to find the native print-PDF link (`/print/pdf/node/...`). Downloads the PDF directly.
+Uses the site's internal GraphQL endpoint (`POST /graphql`, `index_id: "recipe_index"`) to retrieve all ~620 recipe URLs in a single request. For each recipe, fetches the HTML page to extract the native print-PDF link (`/print/pdf/node/...`) and downloads it directly. The full link list is cached in `cache/viandesuisse_links.json`.
 
 ### migusto.migros.ch
 Uses the internal REST API (`POST /.rest/recipes/v1`) to paginate through all ~7 950 recipes and collect slugs. For each slug, fetches the HTML page and extracts the `schema.org/Recipe` JSON-LD block (name, ingredients, steps, nutrition). Generates a formatted PDF with weasyprint and saves a `.json` sidecar alongside it for fast indexing.

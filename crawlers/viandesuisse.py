@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -10,51 +11,77 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://viandesuisse.ch"
-LIST_URL = "https://viandesuisse.ch/recettes"
+_GRAPHQL_URL = "https://viandesuisse.ch/graphql"
 PDF_OUTPUT_DIR = "./pdfs/viandesuisse"
+_CACHE_FILE = "./cache/viandesuisse_links.json"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
+_GQL = """
+{
+  searchAPISearch(
+    index_id: "recipe_index",
+    language: "fr",
+    range: {offset: 0, limit: 2000},
+    sort: {field: "created", value: "desc"},
+    fulltext: {keys: "", fields: ["title"]},
+    facets: []
+    conditions: [{operator: "=", name: "bundle", value: "recipe"}]
+  ) {
+    result_count
+    documents {
+      ... on RecipeIndexDoc {
+        entity {
+          ... on NodeRecipe {
+            entityUrl { path }
+          }
+        }
+      }
+    }
+  }
+}
+"""
 
-def get_recipe_links() -> list[str]:
-    """Retourne toutes les URLs de recettes depuis la page liste, avec pagination."""
+
+def _fetch_recipe_links() -> list[str]:
+    """Récupère tous les liens de recettes via l'API GraphQL du site."""
+    logger.info("Fetching recipe list via GraphQL (%s)", _GRAPHQL_URL)
+    resp = requests.post(
+        _GRAPHQL_URL,
+        json={"query": _GQL},
+        headers={**HEADERS, "Content-Type": "application/json", "Referer": f"{BASE_URL}/recettes"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    result = data["data"]["searchAPISearch"]
+    logger.info("GraphQL result_count: %d", result["result_count"])
+
     links = []
-    seen = set()
-    page = 0
+    for doc in result.get("documents", []):
+        entities = doc.get("entity") or []
+        for entity in entities:
+            path = (entity.get("entityUrl") or {}).get("path")
+            if path and re.match(r"^/recettes/[^/?#]+$", path):
+                links.append(BASE_URL + path)
+    logger.info("Total recipe links: %d", len(links))
+    return links
 
-    while True:
-        url = LIST_URL if page == 0 else f"{LIST_URL}?page={page}"
-        logger.info("Fetching list page %d: %s", page, url)
 
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
+def get_recipe_links(renew: bool = False) -> list[str]:
+    """Retourne tous les liens de recettes. Cache JSON dans cache/viandesuisse_links.json."""
+    cache = Path(_CACHE_FILE)
+    if not renew and cache.exists():
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        logger.info("Cache: %d viandesuisse links loaded", len(data))
+        return data
 
-        new_links = []
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if re.match(r"^/recettes/[^/?#]+$", href):
-                full_url = BASE_URL + href
-                if full_url not in seen:
-                    seen.add(full_url)
-                    new_links.append(full_url)
-
-        if not new_links:
-            logger.info("No new recipes on page %d, stopping pagination", page)
-            break
-
-        links.extend(new_links)
-        logger.info("Found %d recipes on page %d", len(new_links), page)
-
-        if not soup.find("a", rel="next"):
-            break
-
-        page += 1
-        time.sleep(1)
-
-    logger.info("Total recipes found: %d", len(links))
+    links = _fetch_recipe_links()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(links, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Cache saved: %s", cache)
     return links
 
 
@@ -102,11 +129,10 @@ def download_pdf(pdf_url: str, output_dir: str, recipe_url: str) -> str | None:
 
 
 def crawl(output_dir: str = PDF_OUTPUT_DIR, limit: int | None = None, renew: bool = False) -> None:
-    """Orchestre le crawl : recupere les liens, skip les PDFs existants, telecharge jusqu'a `limit` nouveaux.
-    Le parametre renew est accepte pour compatibilite mais ignore (site trop petit pour necessiter un cache)."""
+    """Orchestre le crawl : recupere les liens, skip les PDFs existants, telecharge jusqu'a `limit` nouveaux."""
     logger.info("Starting crawl of viandesuisse.ch (limit=%s)", limit)
 
-    recipe_links = get_recipe_links()
+    recipe_links = get_recipe_links(renew=renew)
 
     pending = []
     for recipe_url in recipe_links:
