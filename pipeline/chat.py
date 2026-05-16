@@ -492,10 +492,10 @@ def chat(message: str, history: list[dict]) -> str:
                     )
 
     # Reference numerique a la liste precedente : "recette 12", "numero 3", etc.
-    print(f"[DBG] msg={message!r} _last_recipe_ids len={len(_last_recipe_ids)}", flush=True)
+    print(f"[DBG] msg={message!r} bytes={message.encode()!r} _last_recipe_ids len={len(_last_recipe_ids)}", flush=True)
     if _last_recipe_ids:
         ref = _extract_list_ref(message)
-        print(f"[DBG] ref={ref}", flush=True)
+        print(f"[DBG] ref={ref} direct_re={__import__('re').search(r'recette', message)}", flush=True)
         if ref is not None:
             idx = ref - 1
             if 0 <= idx < len(_last_recipe_ids):
