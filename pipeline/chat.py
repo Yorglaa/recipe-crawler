@@ -299,8 +299,8 @@ _DETAIL_STOPWORDS = {
 _KNOWN_SITES = {'viandesuisse', 'qoqa', 'migusto', 'fooby'}
 
 _SHOW_ALL_PATTERN = re.compile(
-    r"(toutes?|tout|liste\s+compl[eè]te?|compl[eè]tement|"
-    r"montre[- ]les[- ]toutes?|affiche[- ]tout|toutes?\s+les\s+recettes?)",
+    r"(toutes?|tout|liste\s+compl[eè]te?|compl[eè]tement|"
+    r"montre[- ]les[- ]toutes?|affiche[- ]tout|toutes?\s+les\s+recettes?)",
     re.IGNORECASE,
 )
 
@@ -378,7 +378,7 @@ def _extract_list_ref(message: str) -> int | None:
     """Extrait un numero de reference a la liste precedente (1-based), ou None."""
     if re.match(r"^\s*(\d+)\s*$", message):
         return int(re.match(r"^\s*(\d+)\s*$", message).group(1))
-    m = re.search(r"(?:recette|num[eé]ro|n[o°]\.?)\s*(\d+)", message, re.IGNORECASE)
+    m = re.search(r"(?:recette|num[eé]ro|n[o°]\.?)\s*(\d+)", message, re.IGNORECASE)
     if m:
         return int(m.group(1))
     return None
@@ -492,11 +492,8 @@ def chat(message: str, history: list[dict]) -> str:
                     )
 
     # Reference numerique a la liste precedente : "recette 12", "numero 3", etc.
-    print(f"[DBG] msg={message!r} bytes={message.encode()!r} _last_recipe_ids len={len(_last_recipe_ids)}", flush=True)
     if _last_recipe_ids:
         ref = _extract_list_ref(message)
-        _inline = re.search(r"(?:recette|num[eé]ro|n[o°]\.?)\s*(\d+)", message, re.IGNORECASE)
-        print(f"[DBG] ref={ref} inline_match={_inline} inline_group={_inline.group(1) if _inline else None}", flush=True)
         if ref is not None:
             idx = ref - 1
             if 0 <= idx < len(_last_recipe_ids):
