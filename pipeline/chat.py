@@ -1,11 +1,16 @@
 """
 Orchestration du chatbot de recettes.
 
-Routing :
-  - sql_duration  : questions sur le temps de preparation
-  - sql_category  : questions sur la categorie de plat
-  - hybrid        : ingredient + contrainte structuree
-  - rag           : tout le reste (recherche semantique)
+Routing de recherche :
+  - sql_duration  : durée seule
+  - sql_category  : catégorie seule
+  - hybrid        : ingredient + durée ou catégorie (intersection SQL)
+  - rag           : tout le reste (recherche sémantique + SQL supplémentaire)
+
+Affinement progressif (_active_filters) :
+  - query : requête accumulée entre les tours (ingrédients, durée, mots-clés)
+  - site  : filtre site appliqué en post-search
+  Ex: "agneau" → "de chez qoqa" → "en moins de 45 min" conserve tous les filtres.
 """
 
 import logging
@@ -31,16 +36,20 @@ _last_recipe_ids: list[int] = []
 _last_disambig_titles: list[str] = []
 _last_site: str | None = None
 
+# Filtres de recherche persistants entre les tours.
+# query : requête textuelle accumulée ; site : filtre post-search.
+_active_filters: dict = {"query": "", "site": None}
+
 DISAMBIG_MARKER = "Plusieurs recettes correspondent"
 _DISAMBIG_MARKER = DISAMBIG_MARKER  # alias interne
 
 
 def reset_context() -> None:
-    global _last_recipe_ids, _last_disambig_titles, _last_site
+    global _last_recipe_ids, _last_disambig_titles, _last_site, _active_filters
     _last_recipe_ids = []
     _last_disambig_titles = []
     _last_site = None
-
+    _active_filters = {"query": "", "site": None}
 
 
 _SYSTEM_PROMPT = """Tu es un assistant culinaire francophone specialise dans les recettes de cuisine.
@@ -86,6 +95,7 @@ def _open_system_pdf(path: str) -> None:
     else:
         subprocess.run(["xdg-open", path], check=False)
 
+
 _CATEGORY_KEYWORDS = {
     "soupe", "veloute", "potage", "dessert", "gateau", "tarte", "entree",
     "salade", "gratin", "plat principal", "apero", "aperitif", "risotto",
@@ -94,27 +104,29 @@ _CATEGORY_KEYWORDS = {
 
 
 def _normalize(text: str) -> str:
-    text = text.replace("’", "’").replace("‘", "’")  # apostrophes typographiques
+    text = text.replace("’", "'").replace("‘", "'")  # apostrophes typographiques
     text = text.replace("œ", "oe").replace("Œ", "oe")
     text = text.replace("æ", "ae").replace("Æ", "ae")
     return unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("ascii").lower()
 
 
-def classify_query(query: str) -> str:
-    q = _normalize(query)
-    has_duration = bool(_DURATION_PATTERNS.search(q))
-    has_category = any(kw in q for kw in _CATEGORY_KEYWORDS)
-
-    if has_duration and has_category:
-        return "hybrid"
-    if has_duration:
-        return "sql_duration"
-    if has_category:
-        return "sql_category"
-    return "rag"
-
-
 _NON_INGREDIENTS = {"recettes", "recette", "plats", "plat", "idees", "idee", "chose", "autres"}
+
+# Mots à exclure pour détecter du contenu sémantique dans une requête durée
+_DURATION_CONTENT_STRIP = re.compile(
+    r"\b(?:en\s+moins\s+de|moins\s+de|plus\s+de|en\s+\d+|sous|max(?:imum)?)\s*\d*"
+    r"|\b(?:minutes?|mins?|heures?|hrs?|rapide|vite|express)\b"
+    r"|\d+",
+    re.IGNORECASE,
+)
+_FILLER = {"avec", "sans", "pour", "dans", "des", "les", "une", "un", "de", "du", "la", "le", "et", "ou"}
+
+
+def _has_semantic_content(normalized_query: str) -> bool:
+    """True si la requête contient du contenu au-delà des contraintes de durée."""
+    stripped = _DURATION_CONTENT_STRIP.sub("", normalized_query)
+    words = [w for w in re.split(r"[\s,]+", stripped) if len(w) >= 3 and w not in _FILLER | _NON_INGREDIENTS]
+    return bool(words)
 
 
 def _extract_ingredients(normalized_query: str) -> list[str]:
@@ -145,6 +157,38 @@ def _extract_ingredients(normalized_query: str) -> list[str]:
             ingredients.insert(0, m.group(1))
 
     return ingredients
+
+
+def classify_query(query: str) -> str:
+    q = _normalize(query)
+    has_duration = bool(_DURATION_PATTERNS.search(q))
+    has_category = any(kw in q for kw in _CATEGORY_KEYWORDS)
+    has_ingredient = bool(_extract_ingredients(q))
+
+    if has_duration and (has_category or has_ingredient or _has_semantic_content(q)):
+        return "hybrid"
+    if has_duration:
+        return "sql_duration"
+    if has_category:
+        return "sql_category"
+    return "rag"
+
+
+def _rag(query: str, n_results: int) -> list[dict]:
+    hits = embeddings.semantic_search(query, n_results=n_results)
+    ids = [int(h["recipe_id"]) for h in hits if h.get("recipe_id") is not None]
+    return database.get_recipes_by_ids(ids)
+
+
+def _extract_minutes(query: str) -> int | None:
+    m = _DURATION_VALUE.search(query)
+    if not m:
+        return None
+    value = int(m.group(1))
+    unit = m.group(0).lower()
+    if "h" in unit and "min" not in unit:
+        return value * 60
+    return value
 
 
 def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
@@ -180,18 +224,55 @@ def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
 
     elif route == "hybrid":
         minutes = _extract_minutes(query)
-        sql_rows = database.search_by_duration(minutes) if minutes else []
-        rag_rows = _rag(query, n_results)
-        seen = {r["id"] for r in rag_rows}
-        merged = list(rag_rows)
-        for r in sql_rows:
-            if r["id"] not in seen:
-                merged.append(r)
-                seen.add(r["id"])
-        total_found = len(merged)
-        results = merged[:n_results]
+        ingredients = _extract_ingredients(q)
 
-    else:  # rag — supplement with SQL ingredient + title search
+        if minutes and ingredients:
+            # Intersection : recettes qui correspondent aux ingrédients ET à la durée
+            ing_ids: set[int] = set()
+            for i, ing in enumerate(ingredients):
+                ids = {r["id"] for r in database.search_by_ingredient(ing)}
+                ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
+                ing_ids = ids if i == 0 else ing_ids & ids
+            duration_ids = {r["id"] for r in database.search_by_duration(minutes)}
+            intersection = ing_ids & duration_ids
+            if intersection:
+                all_matching = database.get_recipes_by_ids(list(intersection))
+                rag_ids = {r["id"] for r in _rag(query, n_results)}
+                total_found = len(all_matching)
+                results = sorted(
+                    all_matching, key=lambda r: (0 if r["id"] in rag_ids else 1)
+                )[:n_results]
+            else:
+                # Aucune intersection : union, priorité aux ingrédients
+                all_matching = database.get_recipes_by_ids(list(ing_ids | duration_ids))
+                total_found = len(all_matching)
+                results = all_matching[:n_results]
+        elif minutes:
+            # Durée + contenu sémantique sans ingrédient structuré (ex: "curry en 30 min")
+            # RAG sur la requête complète, puis filtrage par durée
+            rag_rows = _rag(query, n_results * 5)
+            duration_filtered = [
+                r for r in rag_rows
+                if r.get("duration_minutes") and r["duration_minutes"] <= minutes
+            ]
+            if duration_filtered:
+                total_found = len(duration_filtered)
+                results = duration_filtered[:n_results]
+            else:
+                # Rien de filtré : fallback durée seule
+                sql_rows = database.search_by_duration(minutes)
+                total_found = len(sql_rows)
+                results = sql_rows[:n_results]
+        else:
+            # Durée + catégorie : union RAG + SQL durée
+            sql_rows = database.search_by_duration(minutes) if minutes else []
+            rag_rows = _rag(query, n_results)
+            seen = {r["id"] for r in rag_rows}
+            merged = list(rag_rows) + [r for r in sql_rows if r["id"] not in seen]
+            total_found = len(merged)
+            results = merged[:n_results]
+
+    else:  # rag — complété avec recherche SQL par ingrédient
         rag_rows = _rag(query, n_results)
         ingredients = _extract_ingredients(q)
         if len(ingredients) >= 2:
@@ -205,7 +286,9 @@ def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
                 all_matching = database.get_recipes_by_ids(list(intersection))
                 rag_ids = {r["id"] for r in rag_rows}
                 total_found = len(all_matching)
-                results = sorted(all_matching, key=lambda r: (0 if r["id"] in rag_ids else 1))[:n_results]
+                results = sorted(
+                    all_matching, key=lambda r: (0 if r["id"] in rag_ids else 1)
+                )[:n_results]
             else:
                 results = rag_rows
                 total_found = len(results)
@@ -226,26 +309,19 @@ def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
         results = database.get_recipes_by_ids(_last_recipe_ids[:6])
         total_found = len(results)
 
-    # Stocker TOUS les IDs pour le mode détail
     _last_recipe_ids = [r["id"] for r in results]
     return results, total_found
 
 
-def _rag(query: str, n_results: int) -> list[dict]:
-    hits = embeddings.semantic_search(query, n_results=n_results)
-    ids = [int(h["recipe_id"]) for h in hits if h.get("recipe_id") is not None]
-    return database.get_recipes_by_ids(ids)
-
-
-def _extract_minutes(query: str) -> int | None:
-    m = _DURATION_VALUE.search(query)
-    if not m:
-        return None
-    value = int(m.group(1))
-    unit = m.group(0).lower()
-    if "h" in unit and "min" not in unit:
-        return value * 60
-    return value
+def _search_with_filters(filters: dict, n_results: int = 20) -> tuple[list[dict], int]:
+    """search_recipes + filtre site post-search si actif.
+    Augmente n_results en amont pour compenser la réduction du filtre site."""
+    broad_n = 300 if filters.get("site") else n_results
+    results, total = search_recipes(filters["query"], n_results=broad_n)
+    if filters.get("site"):
+        results = [r for r in results if r["site"] == filters["site"]]
+        total = len(results)
+    return results[:n_results], total
 
 
 def _is_detail_request(query: str) -> bool:
@@ -267,8 +343,10 @@ def _find_in_context(query: str, semantic: bool = True) -> list[dict]:
 
     # 2) Overlap de mots-clés (> 3 caractères, sans mots de requête parasites)
     q_words = {w for w in re.split(r"[\s']+", q_norm) if len(w) > 3 and w not in _DETAIL_STOPWORDS}
+
     def _overlap(r: dict) -> int:
         return len({w for w in re.split(r"[\s']+", _normalize(r["title"])) if len(w) > 3} & q_words)
+
     scored = sorted(context_recipes, key=_overlap, reverse=True)
     top_score = _overlap(scored[0]) if scored else 0
     if top_score > 0:
@@ -285,7 +363,6 @@ def _find_in_context(query: str, semantic: bool = True) -> list[dict]:
         if matched:
             return database.get_recipes_by_ids(matched[:2])
 
-    # Rien trouvé dans le contexte → l'appelant fera une recherche fraîche
     return []
 
 
@@ -296,7 +373,24 @@ _DETAIL_STOPWORDS = {
     "procedure", "cuisson", "affiche", "explique", "temperature",
 }
 
-_KNOWN_SITES = {'viandesuisse', 'qoqa', 'migusto', 'fooby'}
+_KNOWN_SITES = {"viandesuisse", "qoqa", "migusto", "fooby"}
+
+# Affinement ingrédients : phrases qui prolongent la recherche précédente
+# Affinement durée : "en moins de 30 min", "rapide", "sous 45 min", etc.
+_REFINE_PATTERN = re.compile(
+    r"^\s*(?:"
+    r"avec\b|sans\b"
+    r"|et\s+(?:du|de\s+la|des|aussi)\b"
+    r"|mais\s+(?:sans|avec)\b"
+    r"|aussi\s+avec\b"
+    r"|en\s+moins\b"
+    r"|moins\s+de\b"
+    r"|en\s+\d+"
+    r"|(?:sous|max(?:imum)?)\s*\d+"
+    r"|(?:rapide|vite|express)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 _SHOW_ALL_PATTERN = re.compile(
     r"(toutes?|tout|liste\s+compl[eè]te?|compl[eè]tement|"
@@ -375,7 +469,7 @@ def _search_for_detail(query: str) -> list[dict]:
 
 
 def _extract_list_ref(message: str) -> int | None:
-    """Extrait un numero de reference a la liste precedente (1-based), ou None."""
+    """Extrait un numéro de référence à la liste précédente (1-based), ou None."""
     if re.match(r"^\s*(\d+)\s*$", message):
         return int(re.match(r"^\s*(\d+)\s*$", message).group(1))
     m = re.search(r"(?:recette|num[eé]ro|n[o°]\.?)\s*(\d+)", message, re.IGNORECASE)
@@ -421,6 +515,13 @@ def _build_site_listing_msg(site: str, all_site: list[dict], user_message: str) 
     )
 
 
+def _build_sources_str() -> str:
+    sites = database.get_sites_summary()
+    return "Sources : " + ", ".join(
+        f"{s['site']} ({s['count']} recettes)" for s in sites
+    ) + ".\n\n"
+
+
 def format_context(recipes: list[dict], detailed: bool = False) -> str:
     if not recipes:
         return "Aucune recette trouvee pour cette recherche."
@@ -449,13 +550,19 @@ def format_context(recipes: list[dict], detailed: bool = False) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+_DETAIL_INSTRUCTION = (
+    "\nINSTRUCTION : Reproduis la recette complète telle qu'elle apparaît dans "
+    "la section '--- Recette complète ---' : ingrédients, quantités, durées, "
+    "et toutes les étapes de préparation. Ne résume pas, ne saute rien.\n"
+)
+
+
 def chat(message: str, history: list[dict]) -> str:
-    global _client, _last_disambig_titles, _last_recipe_ids, _last_site
+    global _client, _last_disambig_titles, _last_recipe_ids, _last_site, _active_filters
     if _client is None:
         _client = genai.Client(api_key=config.GEMINI_API_KEY)
 
-    # Désambiguïsation : si le dernier message du bot était une liste numérotée,
-    # lire le choix de l'utilisateur directement depuis l'historique
+    # ── Dernier message du bot (pour désambiguïsation) ──────────────────────
     last_bot_raw = next(
         (t["content"] for t in reversed(history) if t.get("role") == "assistant"),
         None,
@@ -464,6 +571,8 @@ def chat(message: str, history: list[dict]) -> str:
         last_bot = " ".join(p.get("text", "") for p in last_bot_raw if isinstance(p, dict))
     else:
         last_bot = last_bot_raw
+
+    # ── Désambiguïsation ─────────────────────────────────────────────────────
     if last_bot and _DISAMBIG_MARKER in last_bot:
         num_val = None
         bare = re.match(r"^\s*(\d+)\s*$", message.strip())
@@ -480,92 +589,74 @@ def chat(message: str, history: list[dict]) -> str:
                 recipes = [recipe] if recipe else []
                 if recipes:
                     context = format_context(recipes, detailed=True)
-                    detail_instruction = (
-                        "\nINSTRUCTION : Reproduis la recette complète telle qu'elle apparaît dans "
-                        "la section '--- Recette complète ---' : ingrédients, quantités, durées, "
-                        "et toutes les étapes de préparation. Ne résume pas, ne saute rien.\n"
-                    )
                     return _call_llm(
-                        f"Recettes disponibles :\n\n{context}\n\n{detail_instruction}"
+                        f"Recettes disponibles :\n\n{context}\n\n{_DETAIL_INSTRUCTION}"
                         f"Question de l'utilisateur : {message}",
                         history,
                     )
 
-    # Reference numerique a la liste precedente : "recette 12", "numero 3", etc.
+    # ── Référence numérique à la liste précédente ────────────────────────────
     if _last_recipe_ids:
         ref = _extract_list_ref(message)
         if ref is not None:
             idx = ref - 1
             if 0 <= idx < len(_last_recipe_ids):
                 recipe = database.get_recipe_by_id(_last_recipe_ids[idx])
-                print(f"[DBG] idx={idx} recipe={recipe['title'] if recipe else None}", flush=True)
                 if recipe:
                     context = format_context([recipe], detailed=True)
-                    detail_instruction = (
-                        chr(10) + 'INSTRUCTION : Reproduis la recette complete telle qu' + chr(39) + 'elle apparait dans '
-                        'la section ' + chr(39) + '--- Recette complete ---' + chr(39) + ' : ingredients, quantites, durees, '
-                        'et toutes les etapes de preparation. Ne resume pas, ne saute rien.' + chr(10)
-                    )
                     return _call_llm(
-                        'Recettes disponibles :' + chr(10) * 2 + context + chr(10) * 2 + detail_instruction
-                        + 'Question de l' + chr(39) + 'utilisateur : ' + message,
+                        f"Recettes disponibles :\n\n{context}\n\n{_DETAIL_INSTRUCTION}"
+                        f"Question de l'utilisateur : {message}",
                         history,
                     )
 
-    # Suivi de contexte site : "montre les toutes", "affiche la liste complète", etc.
+    # ── Listing complet d'un site ("montre les toutes") ──────────────────────
     if _last_site and _SHOW_ALL_PATTERN.search(message):
         all_site = database.search_by_site(_last_site)
-        _last_recipe_ids = [r['id'] for r in all_site]
-        msg = _build_site_listing_msg(_last_site, all_site, message)
-        return _call_llm(msg, history)
+        _last_recipe_ids = [r["id"] for r in all_site]
+        return _call_llm(_build_site_listing_msg(_last_site, all_site, message), history)
 
-    site = _extract_site(message)
+    # ── Site détecté dans le message ─────────────────────────────────────────
+    site_in_msg = _extract_site(message)
+    # Affinement par site : message court (≤ 6 mots) avec contexte actif
+    is_site_refinement = bool(site_in_msg and len(message.split()) <= 6 and _active_filters["query"])
 
-    if site:
-        _last_site = site
-        all_site = database.search_by_site(site)
-        _last_recipe_ids = [r['id'] for r in all_site]
-        msg = _build_site_listing_msg(site, all_site, message)
-        return _call_llm(msg, history)
+    if site_in_msg and not is_site_refinement:
+        # Listing complet du site
+        _last_site = site_in_msg
+        all_site = database.search_by_site(site_in_msg)
+        _last_recipe_ids = [r["id"] for r in all_site]
+        return _call_llm(_build_site_listing_msg(site_in_msg, all_site, message), history)
 
+    # ── Comptage ──────────────────────────────────────────────────────────────
     if _COUNT_PATTERN.search(message):
         exact_count = _compute_exact_count(message)
         recipes, _ = search_recipes(message, n_results=20)
         context = format_context(recipes)
-        sites_data = database.get_sites_summary()
-        sites_str = "Sources : " + ", ".join(
-            f"{s['site']} ({s['count']} recettes)" for s in sites_data
-        ) + "." + chr(10) * 2
         count_note = (
             f"\n[INSTRUCTION : L'utilisateur demande combien de recettes correspondent. "
             f"Le nombre exact est {exact_count}. "
             f"Commence ta réponse en mentionnant ce chiffre précis. "
             f"Les recettes ci-dessous sont des exemples parmi ces {exact_count}.]\n"
         )
-        msg = (
-            sites_str
-            + "Recettes disponibles :" + chr(10) * 2
-            + context + chr(10) * 2
-            + count_note
-            + "Question de l'utilisateur : " + message
+        return _call_llm(
+            _build_sources_str()
+            + f"Recettes disponibles :\n\n{context}\n\n{count_note}"
+            + f"Question de l'utilisateur : {message}",
+            history,
         )
-        return _call_llm(msg, history)
 
+    # ── Listage du contexte courant ───────────────────────────────────────────
     if _last_recipe_ids and _LIST_REQUEST_PATTERN.search(message) and not _last_site:
-        list_recipes = database.get_recipes_by_ids(_last_recipe_ids)
-        list_context = format_context(list_recipes)
-        sites_data = database.get_sites_summary()
-        sites_str = "Sources : " + ", ".join(
-            f"{s['site']} ({s['count']} recettes)" for s in sites_data
-        ) + "." + chr(10) * 2
-        msg = (
-            sites_str
-            + "Recettes disponibles :" + chr(10) * 2
-            + list_context + chr(10) * 2
-            + "Question de l'utilisateur : " + message
+        list_context = format_context(database.get_recipes_by_ids(_last_recipe_ids))
+        return _call_llm(
+            _build_sources_str()
+            + f"Recettes disponibles :\n\n{list_context}\n\n"
+            + f"Question de l'utilisateur : {message}",
+            history,
         )
-        return _call_llm(msg, history)
 
+    # ── Ouverture PDF ─────────────────────────────────────────────────────────
     if _PDF_OPEN_PATTERN.search(message) and _last_recipe_ids:
         recipe = None
         ref = _extract_list_ref(message)
@@ -598,8 +689,8 @@ def chat(message: str, history: list[dict]) -> str:
             return f"Fichier introuvable : {pdf}"
         return "Je n'ai pas pu identifier la recette. Précisez le nom ou tapez son numéro."
 
-    is_detail = _is_detail_request(message)
-    if is_detail:
+    # ── Détail d'une recette ──────────────────────────────────────────────────
+    if _is_detail_request(message):
         recipes = _find_in_context(message, semantic=False) if _last_recipe_ids else []
         if not recipes and last_bot and _last_recipe_ids:
             ctx = database.get_recipes_by_ids(_last_recipe_ids)
@@ -627,47 +718,46 @@ def chat(message: str, history: list[dict]) -> str:
                     + "\n".join(lines)
                 )
             recipes = unique
-        total_found = len(recipes)
-    else:
-        recipes, total_found = search_recipes(message, n_results=20)
-    context = format_context(recipes, detailed=is_detail)
+        context = format_context(recipes, detailed=True)
+        return _call_llm(
+            _build_sources_str()
+            + f"Recettes disponibles :\n\n{context}\n\n{_DETAIL_INSTRUCTION}"
+            + f"Question de l'utilisateur : {message}",
+            history,
+        )
 
-    detail_instruction = (
-        "\nINSTRUCTION : Reproduis la recette complète telle qu'elle apparaît dans "
-        "la section '--- Recette complète ---' : ingrédients, quantités, durées, "
-        "et toutes les étapes de préparation. Ne résume pas, ne saute rien.\n"
-        if is_detail else ""
-    )
-    sites = database.get_sites_summary()
-    sites_str = "Sources : " + ", ".join(
-        f"{s['site']} ({s['count']} recettes)" for s in sites
-    ) + "." + chr(10) * 2
+    # ── Recherche (nouvelle ou raffinement) ───────────────────────────────────
+    if is_site_refinement:
+        _active_filters["site"] = site_in_msg
+    elif _REFINE_PATTERN.match(message) and _active_filters["query"]:
+        _active_filters["query"] += " " + message.strip()
+    else:
+        _active_filters = {"query": message, "site": None}
+
+    recipes, total_found = _search_with_filters(_active_filters)
+    _last_recipe_ids = [r["id"] for r in recipes]
+
+    context = format_context(recipes)
     truncation_note = (
         f"\n[Note : {total_found} recettes correspondent au total, seules les {len(recipes)} plus pertinentes "
         f"sont affichées. Informez l'utilisateur et invitez-le à affiner sa recherche "
         f"(ingrédient, durée, catégorie, site...).]\n"
         if total_found > len(recipes) else ""
     )
-    duration_minutes = _extract_minutes(message) if not is_detail else None
+    duration_minutes = _extract_minutes(message)
     duration_note = (
         f"\n[Note : Toutes les recettes ci-dessous ont une durée de préparation "
         f"de {duration_minutes} minutes ou moins — elles sont toutes filtrées par durée.]\n"
         if duration_minutes and recipes else ""
     )
-    context_block = (
-        "Recettes disponibles :" + chr(10) * 2
-        + context + chr(10) * 2
+    return _call_llm(
+        _build_sources_str()
+        + f"Recettes disponibles :\n\n{context}\n\n"
         + duration_note
         + truncation_note
+        + f"Question de l'utilisateur : {message}",
+        history,
     )
-    user_message_with_context = (
-        sites_str
-        + context_block
-        + detail_instruction
-        + "Question de l'utilisateur : " + message
-    )
-
-    return _call_llm(user_message_with_context, history)
 
 
 def _call_groq(user_message_with_context: str, history: list[dict]) -> str:
@@ -694,7 +784,7 @@ def _call_groq(user_message_with_context: str, history: list[dict]) -> str:
         temperature=0.7,
         max_tokens=2048,
     )
-    return "[fallback: " + config.GROQ_MODEL + "]" + chr(10) * 2 + response.choices[0].message.content
+    return f"[fallback: {config.GROQ_MODEL}]\n\n{response.choices[0].message.content}"
 
 
 def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
@@ -724,7 +814,7 @@ def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
                 contents=contents,
                 config=gen_config,
             )
-            prefix = "" if model_name == config.GEMINI_MODEL else ("[fallback: " + model_name + "]" + chr(10) * 2)
+            prefix = "" if model_name == config.GEMINI_MODEL else f"[fallback: {model_name}]\n\n"
             return prefix + response.text
         except Exception as e:
             print(f"[LLM] {model_name} failed: {e}")
@@ -740,4 +830,4 @@ def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
         except Exception as e:
             print(f"[LLM] Groq failed: {e}")
 
-    return "⚠️ Tous les services IA sont indisponibles. Réessaie dans quelques minutes."
+    return "Tous les services IA sont indisponibles. Reessaie dans quelques minutes."
