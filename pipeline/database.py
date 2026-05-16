@@ -133,24 +133,49 @@ def get_recipes_by_ids(recipe_ids: list[int]) -> list[dict]:
 
 
 def _ligature_variants(term: str) -> list[str]:
-    """Génère les variantes ligatures/umlauts et forme sans 's' final (pluriels FR/DE).
+    """Génère les variantes pour la recherche SQL (LIKE).
 
-    Mappings :
-      oe ↔ œ  (ex: boeuf ↔ bœuf)
-      ae ↔ æ  (ligature AE)
-      ae ↔ ä  (romanisation umlaut allemand : spaetzli ↔ spätzli)
-      oe ↔ ö  (romanisation umlaut allemand)
-      ue ↔ ü  (romanisation umlaut allemand)
+    Pluriels/singuliers français :
+      -s  ↔  ø        : escalopes ↔ escalope, steaks ↔ steak
+      -oux ↔ -ou      : choux ↔ chou
+      -eaux ↔ -eau    : veaux ↔ veau, agneaux ↔ agneau, poireaux ↔ poireau
+      -aux ↔ -al      : bocaux ↔ bocal  (seul cas où singulier ⊄ pluriel via LIKE)
+
+    Ligatures et romanisations :
+      oe ↔ œ          : boeuf ↔ bœuf
+      ae ↔ æ          : ligature AE
+      ae ↔ ä          : spaetzli ↔ spätzli (umlaut allemand)
+      oe ↔ ö, ue ↔ ü  : autres umlauts allemands
     """
     variants = {term}
+
+    # ── Pluriels réguliers en -s ──────────────────────────────────────────
     if len(term) > 4 and term.endswith("s"):
         variants.add(term[:-1])
+
+    # ── Pluriels/singuliers en -x (français) ─────────────────────────────
+    if term.endswith("oux"):                    # choux → chou
+        variants.add(term[:-1])
+    elif term.endswith("eaux"):                 # veaux/agneaux/poireaux → veau/agneau/poireau
+        variants.add(term[:-1])
+    elif term.endswith("aux"):                  # bocaux → bocal
+        variants.add(term[:-3] + "al")
+
+    if term.endswith("ou") and len(term) > 3:  # chou → choux
+        variants.add(term + "x")
+    if term.endswith("eau"):                    # veau → veaux, poireau → poireaux
+        variants.add(term + "x")
+    if term.endswith("al") and len(term) > 3:  # bocal → bocaux (bocal ⊄ bocaux via LIKE)
+        variants.add(term[:-2] + "aux")
+
+    # ── Ligatures et umlauts ──────────────────────────────────────────────
     for a, b in (("oe", "œ"), ("ae", "æ"), ("ae", "ä"), ("oe", "ö"), ("ue", "ü")):
         expanded = set()
         for v in variants:
             expanded.add(v.replace(a, b))
             expanded.add(v.replace(b, a))
         variants |= expanded
+
     return list(variants)
 
 
