@@ -86,7 +86,7 @@ def _parse_migusto(pdf_path: Path) -> dict:
 
 
 _VS_DURATION_RE = re.compile(
-    r"Dur[eé]e totale\s*:\s*(?:(\d+)\s*h(?:eure)?s?\s*)?(\d+)?\s*min",
+    r"Dur[eé]e totale\s*:\s*(?:(\d+)\s*h(?:eure)?s?\s*)?(?:(\d+)\s*min)?",
     re.IGNORECASE,
 )
 _VS_TITLE_STOP = re.compile(
@@ -112,7 +112,7 @@ def _parse_viandesuisse(pdf_path: Path) -> dict:
 
     duration_minutes = None
     m = _VS_DURATION_RE.search(text)
-    if m:
+    if m and (m.group(1) or m.group(2)):
         h = int(m.group(1) or 0)
         mn = int(m.group(2) or 0)
         duration_minutes = h * 60 + mn or None
