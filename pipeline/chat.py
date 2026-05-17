@@ -63,7 +63,8 @@ Pour chaque recette que tu mentionnes, indique TOUJOURS sa provenance entre pare
 en utilisant exactement le nom du site tel qu'il apparait dans le contexte : viandesuisse, qoqa, migusto ou fooby.
 Exemple : "Poulet roti aux herbes (viandesuisse) — 45 min".
 REGLE DE FORMATAGE ABSOLUE : quand les recettes sont fournies sous forme de liste numerotee (1. 2. 3. ...),
-reproduis cette liste EXACTEMENT avec ses numeros, dans le meme ordre, sans reformater ni utiliser de puces (*).
+reproduis cette liste EXACTEMENT : tous les elements, dans le meme ordre, avec les memes numeros.
+La numerotation commence toujours a 1. N'omets aucune recette. N'utilise pas de puces (*).
 Si aucune recette pertinente n'est disponible, dis-le honnetement et propose une piste generale.
 Ne mentionne jamais les noms de fichiers PDF ni les identifiants techniques.
 N'hesite pas a interagir avec l'utilisateur : pose des questions de precision si la demande est vague
@@ -828,15 +829,17 @@ def chat(message: str, history: list[dict]) -> str:
 
     context = _numbered_site_list(recipes)
     num_instruction = (
-        "\n[INSTRUCTION ABSOLUE : La liste ci-dessus est numérotée 1. 2. 3. etc. "
-        "Reproduis-la EXACTEMENT telle quelle avec ses numéros, dans le même ordre. "
-        "N'utilise PAS de puces (*). Ne réordonne PAS les recettes. Ne reformate PAS. "
-        "L'utilisateur référence les recettes par numéro (ex: 'recette 3', 'la 5').]\n"
+        f"\n[INSTRUCTION ABSOLUE : La liste ci-dessus contient exactement {len(recipes)} recettes, "
+        f"numérotées de 1 à {len(recipes)}. "
+        f"Tu DOIS les reproduire TOUTES les {len(recipes)}, dans l'ordre, sans en omettre aucune. "
+        "La numérotation commence obligatoirement à 1 — jamais à 2 ou autre. "
+        "N'utilise PAS de puces (*). Ne réordonne PAS. Ne reformate PAS.]\n"
     )
     truncation_note = (
-        f"\n[Note : {total_found} recettes correspondent au total, seules les {len(recipes)} plus pertinentes "
-        f"sont affichées. Informez l'utilisateur et invitez-le à affiner sa recherche "
-        f"(ingrédient, durée, catégorie, site...).]\n"
+        f"\n[Note : {total_found} recettes correspondent au total. "
+        f"La liste ci-dessus en contient exactement {len(recipes)} — affiche-les toutes. "
+        f"Indique à l'utilisateur qu'il y a {total_found} recettes au total "
+        f"et invite-le à affiner sa recherche (ingrédient, durée, catégorie, site...).]\n"
         if total_found > len(recipes) else ""
     )
     duration_minutes = _active_filters.get("max_minutes")
