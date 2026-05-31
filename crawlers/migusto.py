@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://migusto.migros.ch"
 API_URL = "https://migusto.migros.ch/.rest/recipes/v1"
-PDF_OUTPUT_DIR = "./pdfs/migusto"
-_CACHE_FILE = "./cache/migusto_slugs.json"
+_ROOT = Path(__file__).resolve().parent.parent
+PDF_OUTPUT_DIR = str(_ROOT / "pdfs" / "migusto")
+_CACHE_FILE = str(_ROOT / "cache" / "migusto_slugs.json")
 _FILTER_UUID = "69656a62-ce86-42d3-a821-f3faeccb631c"
 _PAGE_SIZE = 24
 

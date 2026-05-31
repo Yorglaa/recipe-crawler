@@ -10,8 +10,9 @@ from playwright.sync_api import sync_playwright
 logger = logging.getLogger(__name__)
 
 LIST_URL = "https://www.qoqa.ch/fr/posts?kind=recipe"
-PDF_OUTPUT_DIR = "./pdfs/qoqa"
-_CACHE_FILE = "./cache/qoqa_links.json"
+_ROOT = Path(__file__).resolve().parent.parent
+PDF_OUTPUT_DIR = str(_ROOT / "pdfs" / "qoqa")
+_CACHE_FILE = str(_ROOT / "cache" / "qoqa_links.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 _POST_RE = re.compile(r"^/fr/posts/(\d+)$")

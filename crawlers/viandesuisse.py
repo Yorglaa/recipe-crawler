@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://viandesuisse.ch"
 _GRAPHQL_URL = "https://viandesuisse.ch/graphql"
-PDF_OUTPUT_DIR = "./pdfs/viandesuisse"
-_CACHE_FILE = "./cache/viandesuisse_links.json"
+_ROOT = Path(__file__).resolve().parent.parent
+PDF_OUTPUT_DIR = str(_ROOT / "pdfs" / "viandesuisse")
+_CACHE_FILE = str(_ROOT / "cache" / "viandesuisse_links.json")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

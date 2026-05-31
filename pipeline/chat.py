@@ -21,20 +21,23 @@ import os
 import platform
 import re
 import subprocess
-import time
-import unicodedata
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from google import genai
-from google.genai import types
-
-import config
-from pipeline import database, embeddings
+from pipeline import database
 from pipeline.database import get_recipe_by_title as _get_by_title
+from pipeline.query_parser import (
+    _normalize, _extract_ingredients, _extract_minutes, _extract_site,
+    _REFINE_PATTERN, _SHOW_ALL_PATTERN, _COUNT_PATTERN, _LIST_REQUEST_PATTERN,
+    _DETAIL_PATTERNS, _PDF_OPEN_PATTERN, _extract_list_ref,
+)
+from pipeline.search_router import (
+    search_recipes, _search_with_filters, _find_in_context,
+    _search_for_detail, _compute_exact_count,
+)
+from pipeline.llm_client import _call_llm
 
-_client: genai.Client | None = None
 _last_recipe_ids: list[int] = []
 _last_disambig_titles: list[str] = []
 _last_site: str | None = None
@@ -55,44 +58,6 @@ def reset_context() -> None:
     _active_filters = {"query": "", "ingredients": [], "site": None, "max_minutes": None}
 
 
-_SYSTEM_PROMPT = """Tu es un assistant culinaire francophone specialise dans les recettes de cuisine.
-Tu reponds uniquement en francais, de facon concise et chaleureuse.
-Tu t'appuies exclusivement sur les recettes fournies dans le contexte pour repondre.
-Quand plusieurs recettes correspondent a la demande, liste-les toutes avec leur titre et duree.
-Pour chaque recette que tu mentionnes, indique TOUJOURS sa provenance entre parentheses apres le titre,
-en utilisant exactement le nom du site tel qu'il apparait dans le contexte : viandesuisse, qoqa, migusto ou fooby.
-Exemple : "Poulet roti aux herbes (viandesuisse) — 45 min".
-REGLE DE FORMATAGE ABSOLUE : quand les recettes sont fournies sous forme de liste numerotee (1. 2. 3. ...),
-reproduis cette liste EXACTEMENT : tous les elements, dans le meme ordre, avec les memes numeros.
-La numerotation commence toujours a 1. N'omets aucune recette. N'utilise pas de puces (*).
-Si aucune recette pertinente n'est disponible, dis-le honnetement et propose une piste generale.
-Ne mentionne jamais les noms de fichiers PDF ni les identifiants techniques.
-N'hesite pas a interagir avec l'utilisateur : pose des questions de precision si la demande est vague
-(ingredients disponibles, nombre de personnes, contraintes alimentaires, temps disponible, etc.)
-afin de proposer des recettes vraiment adaptees a sa situation."""
-
-_DETAIL_PATTERNS = re.compile(
-    # Préfixes : \b au début seulement — matchent toutes les conjugaisons/formes
-    r"\b(?:detaill|etap|prepar|prechauff)"
-    # Mots complets : \b des deux côtés
-    r"|\b(?:details?|marche.?a.?suivre|instruction|comment faire|comment cuire|"
-    r"comment cuisiner|comment la faire|comment le faire|"
-    r"recette complete|explique|procedure|cuisson|"
-    r"temperature|degre|combien de temps|combien d.heures|"
-    r"fais.?la|fais.?le|je veux faire|je vais faire|je la fais)\b",
-    re.IGNORECASE,
-)
-
-_DURATION_PATTERNS = re.compile(
-    r"\b(?:minutes?|mins?|heures?|hrs?|rapide|vite|express|"
-    r"moins de|plus de|maximum|max|en \d+|sous \d+)\b",
-    re.IGNORECASE,
-)
-_DURATION_VALUE = re.compile(r"(\d+)\s*(?:minutes?|mins?|h)", re.IGNORECASE)
-
-_PDF_OPEN_PATTERN = re.compile(r"\bpdf\b", re.IGNORECASE)
-
-
 def _open_system_pdf(path: str) -> None:
     if platform.system() == "Windows":
         os.startfile(path)
@@ -102,453 +67,8 @@ def _open_system_pdf(path: str) -> None:
         subprocess.run(["xdg-open", path], check=False)
 
 
-_CATEGORY_KEYWORDS = {
-    "soupe", "veloute", "potage", "dessert", "gateau", "tarte", "entree",
-    "salade", "gratin", "plat principal", "apero", "aperitif", "risotto",
-    "pates", "pizza", "sandwich", "burger", "brunch", "petit-dejeuner",
-}
-
-
-def _normalize(text: str) -> str:
-    text = text.replace("’", "'").replace("‘", "'")  # apostrophes typographiques
-    text = text.replace("œ", "oe").replace("Œ", "oe")
-    text = text.replace("æ", "ae").replace("Æ", "ae")
-    return unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("ascii").lower()
-
-
-_NON_INGREDIENTS = {"recettes", "recette", "plats", "plat", "idees", "idee", "chose", "autres"}
-
-# Mots à exclure pour détecter du contenu sémantique dans une requête durée
-_DURATION_CONTENT_STRIP = re.compile(
-    r"\b(?:en\s+moins\s+de|moins\s+de|plus\s+de|en\s+\d+|sous|max(?:imum)?)\s*\d*"
-    r"|\b(?:minutes?|mins?|heures?|hrs?|rapide|vite|express)\b"
-    r"|\d+",
-    re.IGNORECASE,
-)
-_FILLER = {"avec", "sans", "pour", "dans", "des", "les", "une", "un", "de", "du", "la", "le", "et", "ou"}
-
-
-def _has_semantic_content(normalized_query: str) -> bool:
-    """True si la requête contient du contenu au-delà des contraintes de durée."""
-    stripped = _DURATION_CONTENT_STRIP.sub("", normalized_query)
-    words = [w for w in re.split(r"[\s,]+", stripped) if len(w) >= 3 and w not in _FILLER | _NON_INGREDIENTS]
-    return bool(words)
-
-
-def _extract_ingredients(normalized_query: str) -> list[str]:
-    """Extrait tous les ingrédients de la requête (premier + conjonctions 'et')."""
-    first = re.search(
-        r"(?:avec\s+(?:de\s+l[' ]?|du\s+|de\s+la\s+|des\s+)|"
-        r"a\s+base\s+de\s+|contenant\s+|(?:des?\s+)?recettes?\s+(?:de\s+|d[' ]\s*|du\s+|au?\s+|aux\s+))"
-        r"([a-z]{3,})",
-        normalized_query,
-    )
-    ingredients = [first.group(1)] if first else []
-    extras = re.findall(
-        r"\bet\s+(?:avec\s+)?(?:de\s+l[' ]?|du\s+|de\s+la\s+|des\s+|au?\s+|aux\s+)([a-z]{3,})",
-        normalized_query,
-    )
-    for ing in extras:
-        if ing not in ingredients:
-            ingredients.append(ing)
-
-    # Cas "du X et des Y" sans contexte verbal : cherche article+ingrédient avant le premier "et"
-    if not first and (extras or not ingredients):
-        pre = normalized_query.split(" et ")[0]
-        m = re.search(
-            r"(?:du\s+|des\s+|de\s+la\s+|de\s+l[' ]?|au?\s+|aux\s+)([a-z]{3,})",
-            pre,
-        )
-        if m and m.group(1) not in _NON_INGREDIENTS and m.group(1) not in ingredients:
-            ingredients.insert(0, m.group(1))
-
-    return ingredients
-
-
-def classify_query(query: str) -> str:
-    q = _normalize(query)
-    has_duration = bool(_DURATION_PATTERNS.search(q))
-    has_category = any(kw in q for kw in _CATEGORY_KEYWORDS)
-    has_ingredient = bool(_extract_ingredients(q))
-
-    if has_duration and (has_category or has_ingredient or _has_semantic_content(q)):
-        return "hybrid"
-    if has_duration:
-        return "sql_duration"
-    if has_category:
-        return "sql_category"
-    return "rag"
-
-
-def _rag(query: str, n_results: int) -> list[dict]:
-    hits = embeddings.semantic_search(query, n_results=n_results)
-    ids = [int(h["recipe_id"]) for h in hits if h.get("recipe_id") is not None]
-    return database.get_recipes_by_ids(ids)
-
-
-def _extract_minutes(query: str) -> int | None:
-    m = _DURATION_VALUE.search(query)
-    if not m:
-        return None
-    value = int(m.group(1))
-    unit = m.group(0).lower()
-    if "h" in unit and "min" not in unit:
-        return value * 60
-    return value
-
-
-def search_recipes(query: str, n_results: int = 6) -> tuple[list[dict], int]:
-    """Retourne (results, total_found) où total_found est le nombre avant troncature."""
-    global _last_recipe_ids
-    route = classify_query(query)
-    q = _normalize(query)
-    results: list[dict] = []
-    total_found: int = 0
-
-    if route == "sql_duration":
-        minutes = _extract_minutes(query)
-        if minutes:
-            rows = database.search_by_duration(minutes)
-            if rows:
-                total_found = len(rows)
-                results = rows[:n_results]
-        if not results:
-            results = _rag(query, n_results)
-            total_found = len(results)
-
-    elif route == "sql_category":
-        for kw in _CATEGORY_KEYWORDS:
-            if kw in q:
-                rows = database.search_by_category(kw)
-                if rows:
-                    total_found = len(rows)
-                    results = rows[:n_results]
-                    break
-        if not results:
-            results = _rag(query, n_results)
-            total_found = len(results)
-
-    elif route == "hybrid":
-        minutes = _extract_minutes(query)
-        ingredients = _extract_ingredients(q)
-
-        if minutes and ingredients:
-            # Intersection : recettes qui correspondent aux ingrédients ET à la durée
-            ing_ids: set[int] = set()
-            for i, ing in enumerate(ingredients):
-                ids = {r["id"] for r in database.search_by_ingredient(ing)}
-                ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
-                ing_ids = ids if i == 0 else ing_ids & ids
-            duration_ids = {r["id"] for r in database.search_by_duration(minutes)}
-            intersection = ing_ids & duration_ids
-            if intersection:
-                all_matching = database.get_recipes_by_ids(list(intersection))
-                rag_ids = {r["id"] for r in _rag(query, n_results)}
-                total_found = len(all_matching)
-                results = sorted(
-                    all_matching, key=lambda r: (0 if r["id"] in rag_ids else 1)
-                )[:n_results]
-            else:
-                # Aucune intersection : union, priorité aux ingrédients
-                all_matching = database.get_recipes_by_ids(list(ing_ids | duration_ids))
-                total_found = len(all_matching)
-                results = all_matching[:n_results]
-        elif minutes:
-            # Durée + contenu sémantique sans ingrédient structuré (ex: "curry en 30 min")
-            # RAG sur la requête complète, puis filtrage par durée
-            rag_rows = _rag(query, n_results * 5)
-            duration_filtered = [
-                r for r in rag_rows
-                if r.get("duration_minutes") and r["duration_minutes"] <= minutes
-            ]
-            if duration_filtered:
-                total_found = len(duration_filtered)
-                results = duration_filtered[:n_results]
-            else:
-                # Rien de filtré : fallback durée seule
-                sql_rows = database.search_by_duration(minutes)
-                total_found = len(sql_rows)
-                results = sql_rows[:n_results]
-        else:
-            # Durée + catégorie : union RAG + SQL durée
-            sql_rows = database.search_by_duration(minutes) if minutes else []
-            rag_rows = _rag(query, n_results)
-            seen = {r["id"] for r in rag_rows}
-            merged = list(rag_rows) + [r for r in sql_rows if r["id"] not in seen]
-            total_found = len(merged)
-            results = merged[:n_results]
-
-    else:  # rag — complété avec recherche SQL par ingrédient
-        rag_rows = _rag(query, n_results)
-        ingredients = _extract_ingredients(q)
-        if len(ingredients) >= 2:
-            per_ing = []
-            for ing in ingredients:
-                ids = {r["id"] for r in database.search_by_ingredient(ing)}
-                ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
-                per_ing.append(ids)
-            intersection = set.intersection(*per_ing)
-            if intersection:
-                all_matching = database.get_recipes_by_ids(list(intersection))
-                rag_ids = {r["id"] for r in rag_rows}
-                total_found = len(all_matching)
-                results = sorted(
-                    all_matching, key=lambda r: (0 if r["id"] in rag_ids else 1)
-                )[:n_results]
-            else:
-                results = rag_rows
-                total_found = len(results)
-        elif ingredients:
-            # SQL-first : toutes les recettes contenant l'ingrédient (pas de limite),
-            # classées par pertinence RAG. Les résultats purement sémantiques (hors SQL)
-            # sont écartés car souvent non pertinents pour une recherche par ingrédient.
-            ing_rows = database.search_by_ingredient(ingredients[0])
-            title_rows = database.search_by_title_keywords([ingredients[0]])
-            ing_ids = {r["id"] for r in ing_rows}
-            all_sql = ing_rows + [r for r in title_rows if r["id"] not in ing_ids]
-            if all_sql:
-                rag_ids = {r["id"] for r in rag_rows}
-                total_found = len(all_sql)
-                results = sorted(all_sql, key=lambda r: (0 if r["id"] in rag_ids else 1))[:n_results]
-            else:
-                results = rag_rows
-                total_found = len(results)
-        else:
-            # Pas d'ingrédient structuré : compléter le RAG par une recherche SQL titre
-            # (gère les mots-clés nus comme "spaetzlis", "involtini", "risotto", etc.)
-            kws = [
-                w for w in re.split(r"[\s']+", q)
-                if len(w) >= 4 and w not in _FILLER | _NON_INGREDIENTS
-            ]
-            if kws:
-                title_rows = database.search_by_title_keywords(kws[:2])
-                if title_rows:
-                    rag_ids = {r["id"] for r in rag_rows}
-                    total_found = len(title_rows)
-                    results = sorted(
-                        title_rows, key=lambda r: (0 if r["id"] in rag_ids else 1)
-                    )[:n_results]
-                else:
-                    results = rag_rows
-                    total_found = len(results)
-            else:
-                results = rag_rows
-                total_found = len(results)
-
-    # Réinjecter les recettes précédentes SEULEMENT si la recherche n'a rien trouvé
-    if not results and _last_recipe_ids:
-        results = database.get_recipes_by_ids(_last_recipe_ids[:6])
-        total_found = len(results)
-
-    _last_recipe_ids = [r["id"] for r in results]
-    return results, total_found
-
-
-def _search_with_filters(filters: dict, n_results: int = 20) -> tuple[list[dict], int]:
-    """Applique les filtres durs (ingrédients, durée, site) puis rank par RAG.
-
-    Garantit que chaque résultat respecte TOUTES les contraintes SQL actives.
-    Le RAG est utilisé uniquement pour le classement, jamais comme filtre.
-    """
-    query = filters["query"]
-    ingredients: list[str] = filters.get("ingredients") or []
-    site: str | None = filters.get("site")
-    max_minutes: int | None = filters.get("max_minutes")
-
-    # ── Construire l'ensemble des IDs contraints par SQL ─────────────────────
-    constrained_ids: set[int] | None = None
-
-    if ingredients:
-        ing_ids: set[int] | None = None
-        for ing in ingredients:
-            # Priorité au titre (ingrédient principal fiable).
-            # Fallback sur la liste d'ingrédients seulement si le titre ne donne rien
-            # — évite les faux positifs du type "fond de boeuf" dans une recette de porc.
-            title_ids = {r["id"] for r in database.search_by_title_keywords([ing])}
-            ids = title_ids if title_ids else {r["id"] for r in database.search_by_ingredient(ing)}
-            ing_ids = ids if ing_ids is None else ing_ids & ids
-        constrained_ids = ing_ids if ing_ids is not None else set()
-
-    if max_minutes:
-        dur_ids = {r["id"] for r in database.search_by_duration(max_minutes)}
-        constrained_ids = constrained_ids & dur_ids if constrained_ids is not None else dur_ids
-
-    # ── Chemin contraint : toutes les recettes SQL + ranking RAG ─────────────
-    if constrained_ids is not None:
-        if not constrained_ids:
-            return [], 0
-        all_matching = database.get_recipes_by_ids(list(constrained_ids))
-        if site:
-            all_matching = [r for r in all_matching if r["site"] == site]
-        if not all_matching:
-            return [], 0
-        rag_rows = _rag(query, n_results)
-        rag_ids = {r["id"] for r in rag_rows}
-        total_found = len(all_matching)
-        results = sorted(all_matching, key=lambda r: (0 if r["id"] in rag_ids else 1))[:n_results]
-        return results, total_found
-
-    # ── Chemin libre : routing complet via search_recipes ────────────────────
-    broad_n = 300 if site else n_results
-    results, total = search_recipes(query, n_results=broad_n)
-    if site:
-        results = [r for r in results if r["site"] == site]
-        total = len(results)
-    return results[:n_results], total
-
-
 def _is_detail_request(query: str) -> bool:
     return bool(_DETAIL_PATTERNS.search(_normalize(query)))
-
-
-def _find_in_context(query: str, semantic: bool = True) -> list[dict]:
-    """Trouve la recette la plus pertinente parmi celles du dernier résultat."""
-    if not _last_recipe_ids:
-        return []
-
-    context_recipes = database.get_recipes_by_ids(_last_recipe_ids)
-    q_norm = _normalize(query)
-
-    # 1) Correspondance directe du titre dans la requête (cas "détaille moi X")
-    by_title = [r for r in context_recipes if _normalize(r["title"]) in q_norm]
-    if by_title:
-        return by_title
-
-    # 2) Overlap de mots-clés (> 3 caractères, sans mots de requête parasites)
-    q_words = {w for w in re.split(r"[\s']+", q_norm) if len(w) > 3 and w not in _DETAIL_STOPWORDS}
-
-    def _overlap(r: dict) -> int:
-        return len({w for w in re.split(r"[\s']+", _normalize(r["title"])) if len(w) > 3} & q_words)
-
-    scored = sorted(context_recipes, key=_overlap, reverse=True)
-    top_score = _overlap(scored[0]) if scored else 0
-    if top_score > 0:
-        return [r for r in scored if _overlap(r) == top_score]
-
-    # 3) Recherche sémantique filtrée au contexte (désactivable pour les requêtes de navigation)
-    if semantic:
-        context_set = set(_last_recipe_ids)
-        hits = embeddings.semantic_search(query, n_results=min(20, len(context_set)))
-        matched = [
-            int(h["recipe_id"]) for h in hits
-            if h.get("recipe_id") is not None and int(h["recipe_id"]) in context_set
-        ]
-        if matched:
-            return database.get_recipes_by_ids(matched[:2])
-
-    return []
-
-
-_DETAIL_STOPWORDS = {
-    "detaille", "detailler", "detaillons", "marche", "suivre", "donne", "montre",
-    "etape", "etapes", "preparer", "preparation", "recette", "recettes",
-    "instruction", "instructions", "comment", "faire", "cuire", "cuisiner",
-    "procedure", "cuisson", "affiche", "explique", "temperature",
-}
-
-_KNOWN_SITES = {"viandesuisse", "qoqa", "migusto", "fooby"}
-
-# Affinement ingrédients : phrases qui prolongent la recherche précédente
-# Affinement durée : "en moins de 30 min", "rapide", "sous 45 min", etc.
-_REFINE_PATTERN = re.compile(
-    r"^\s*(?:"
-    r"avec\b|sans\b"
-    r"|et\s+(?:du|de\s+la|des|aussi|avec)\b"
-    r"|mais\s+(?:sans|avec)\b"
-    r"|aussi\s+avec\b"
-    r"|en\s+moins\b"
-    r"|moins\s+de\b"
-    r"|en\s+\d+"
-    r"|(?:sous|max(?:imum)?)\s*\d+"
-    r"|(?:rapide|vite|express)\b"
-    r")",
-    re.IGNORECASE,
-)
-
-_SHOW_ALL_PATTERN = re.compile(
-    r"(toutes?|tout|liste\s+compl[eè]te?|compl[eè]tement|"
-    r"montre[- ]les[- ]toutes?|affiche[- ]tout|toutes?\s+les\s+recettes?)",
-    re.IGNORECASE,
-)
-
-_COUNT_PATTERN = re.compile(
-    r"\bcombien\b.*\brecettes?\b|\bcombien\b.*\bplats?\b"
-    r"|\btu\s+en\s+as\s+combien\b|\bcombien\s+en\s+as[- ]tu\b"
-    r"|\bcombien\s+as[- ]tu\s+de\b",
-    re.IGNORECASE,
-)
-
-_LIST_REQUEST_PATTERN = re.compile(
-    r"\b(?:la\s+liste|liste[- ]les|donne[- ]moi\s+la\s+liste"
-    r"|montre[- ](?:moi\s+)?la\s+liste|affiche[- ](?:la\s+)?liste)\b",
-    re.IGNORECASE,
-)
-
-
-def _compute_exact_count(query: str) -> int:
-    q = _normalize(query)
-
-    site = _extract_site(query)
-    if site:
-        sites = database.get_sites_summary()
-        for s in sites:
-            if s["site"] == site:
-                return s["count"]
-        return 0
-
-    ingredients = _extract_ingredients(q)
-    if len(ingredients) >= 2:
-        per_ing = []
-        for ing in ingredients:
-            ids = {r["id"] for r in database.search_by_ingredient(ing)}
-            ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
-            per_ing.append(ids)
-        return len(set.intersection(*per_ing))
-    if ingredients:
-        ing = ingredients[0]
-        ids = {r["id"] for r in database.search_by_ingredient(ing)}
-        ids |= {r["id"] for r in database.search_by_title_keywords([ing])}
-        return len(ids)
-
-    for kw in _CATEGORY_KEYWORDS:
-        if kw in q:
-            return len(database.search_by_category(kw))
-
-    minutes = _extract_minutes(query)
-    if minutes:
-        return len(database.search_by_duration(minutes))
-
-    return database.count_recipes()
-
-
-def _extract_site(query: str) -> str | None:
-    q = _normalize(query)
-    for site in _KNOWN_SITES:
-        if site in q:
-            return site
-    return None
-
-
-def _search_for_detail(query: str) -> list[dict]:
-    """Recherche une recette par mots-clés du titre, pour les demandes de détail hors contexte."""
-    q_norm = _normalize(query)
-    words = [w for w in re.split(r"[\s']+", q_norm) if len(w) > 4 and w not in _DETAIL_STOPWORDS]
-    if len(words) >= 2:
-        results = database.search_by_title_keywords(words[:3])
-        if results:
-            return results[:2]
-    results, _ = search_recipes(query)
-    return results
-
-
-def _extract_list_ref(message: str) -> int | None:
-    """Extrait un numéro de référence à la liste précédente (1-based), ou None."""
-    if re.match(r"^\s*(\d+)\s*$", message):
-        return int(re.match(r"^\s*(\d+)\s*$", message).group(1))
-    m = re.search(r"(?:recette|num[eé]ro|n[o°]\.?|pdf)\s*(\d+)", message, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return None
 
 
 def _numbered_site_list(recipes: list[dict]) -> str:
@@ -632,9 +152,7 @@ _DETAIL_INSTRUCTION = (
 
 
 def chat(message: str, history: list[dict]) -> str:
-    global _client, _last_disambig_titles, _last_recipe_ids, _last_site, _active_filters
-    if _client is None:
-        _client = genai.Client(api_key=config.GEMINI_API_KEY)
+    global _last_disambig_titles, _last_recipe_ids, _last_site, _active_filters
 
     # ── Dernier message du bot (pour désambiguïsation) ──────────────────────
     last_bot_raw = next(
@@ -707,7 +225,7 @@ def chat(message: str, history: list[dict]) -> str:
     # ── Comptage ──────────────────────────────────────────────────────────────
     if _COUNT_PATTERN.search(message):
         exact_count = _compute_exact_count(message)
-        recipes, _ = search_recipes(message, n_results=20)
+        recipes, _ = search_recipes(message, n_results=20, fallback_ids=_last_recipe_ids)
         context = format_context(recipes)
         count_note = (
             f"\n[INSTRUCTION : L'utilisateur demande combien de recettes correspondent. "
@@ -743,7 +261,7 @@ def chat(message: str, history: list[dict]) -> str:
         elif len(_last_recipe_ids) == 1:
             recipe = database.get_recipe_by_id(_last_recipe_ids[0])
         else:
-            candidates = _find_in_context(message, semantic=False)
+            candidates = _find_in_context(message, _last_recipe_ids, semantic=False)
             if not candidates and last_bot:
                 ctx_recipes = database.get_recipes_by_ids(_last_recipe_ids)
                 q_last = _normalize(last_bot)
@@ -767,7 +285,7 @@ def chat(message: str, history: list[dict]) -> str:
 
     # ── Détail d'une recette ──────────────────────────────────────────────────
     if _is_detail_request(message):
-        recipes = _find_in_context(message, semantic=False) if _last_recipe_ids else []
+        recipes = _find_in_context(message, _last_recipe_ids, semantic=False) if _last_recipe_ids else []
         if not recipes and last_bot and _last_recipe_ids:
             ctx = database.get_recipes_by_ids(_last_recipe_ids)
             q_last = _normalize(last_bot)
@@ -824,7 +342,7 @@ def chat(message: str, history: list[dict]) -> str:
             "max_minutes": _extract_minutes(message),
         }
 
-    recipes, total_found = _search_with_filters(_active_filters)
+    recipes, total_found = _search_with_filters(_active_filters, fallback_ids=_last_recipe_ids)
     _last_recipe_ids = [r["id"] for r in recipes]
 
     context = _numbered_site_list(recipes)
@@ -857,76 +375,3 @@ def chat(message: str, history: list[dict]) -> str:
         + f"Question de l'utilisateur : {message}",
         history,
     )
-
-
-def _call_groq(user_message_with_context: str, history: list[dict]) -> str:
-    from groq import Groq
-    client = Groq(api_key=config.GROQ_API_KEY)
-    messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
-    for turn in history[-4:]:
-        role = "user" if turn["role"] == "user" else "assistant"
-        turn_content = turn["content"]
-        if isinstance(turn_content, list):
-            turn_content = " ".join(p.get("text", "") for p in turn_content if isinstance(p, dict))
-        messages.append({"role": role, "content": turn_content})
-    groq_prefix = (
-        "INSTRUCTION ABSOLUE : base-toi UNIQUEMENT sur les recettes listées "
-        "ci-dessous pour répondre. Si des recettes sont présentes dans le contexte, "
-        "utilise-les — ne dis jamais que les informations sont manquantes ou imprécises "
-        "si elles figurent dans le contexte.\n\n"
-    )
-    msg = (groq_prefix + user_message_with_context)[:25000]
-    messages.append({"role": "user", "content": msg})
-    response = client.chat.completions.create(
-        model=config.GROQ_MODEL,
-        messages=messages,
-        temperature=0.7,
-        max_tokens=2048,
-    )
-    return f"[fallback: {config.GROQ_MODEL}]\n\n{response.choices[0].message.content}"
-
-
-def _call_llm(user_message_with_context: str, history: list[dict]) -> str:
-    contents: list[types.Content] = []
-    for turn in history:
-        role = "user" if turn["role"] == "user" else "model"
-        content = turn["content"]
-        if isinstance(content, list):
-            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
-        contents.append(
-            types.Content(role=role, parts=[types.Part(text=content)])
-        )
-    contents.append(
-        types.Content(role="user", parts=[types.Part(text=user_message_with_context)])
-    )
-
-    gen_config = types.GenerateContentConfig(
-        system_instruction=_SYSTEM_PROMPT,
-        temperature=0.7,
-        max_output_tokens=4096,
-    )
-    fallback = getattr(config, "GEMINI_FALLBACK_MODEL", None)
-    for model_name in ([config.GEMINI_MODEL] + ([fallback] if fallback else [])):
-        try:
-            response = _client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=gen_config,
-            )
-            prefix = "" if model_name == config.GEMINI_MODEL else f"[fallback: {model_name}]\n\n"
-            return prefix + response.text
-        except Exception as e:
-            print(f"[LLM] {model_name} failed: {e}")
-            if model_name != config.GEMINI_MODEL:
-                break
-            time.sleep(2)
-
-    groq_key = getattr(config, "GROQ_API_KEY", "")
-    groq_model = getattr(config, "GROQ_MODEL", "")
-    if groq_key and groq_model:
-        try:
-            return _call_groq(user_message_with_context, history)
-        except Exception as e:
-            print(f"[LLM] Groq failed: {e}")
-
-    return "Tous les services IA sont indisponibles. Reessaie dans quelques minutes."

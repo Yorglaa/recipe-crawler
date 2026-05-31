@@ -18,8 +18,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
-PDF_OUTPUT_DIR = "./pdfs/fooby"
-_CACHE_FILE = "./cache/fooby_links.json"
+_ROOT = Path(__file__).resolve().parent.parent
+PDF_OUTPUT_DIR = str(_ROOT / "pdfs" / "fooby")
+_CACHE_FILE = str(_ROOT / "cache" / "fooby_links.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 _API_URL = "https://fooby.ch/hawaii_search.sri"

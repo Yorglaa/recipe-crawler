@@ -12,11 +12,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_SITES = ["viandesuisse", "migusto", "qoqa"]
+_SITES = ["viandesuisse", "migusto", "qoqa", "fooby"]
 _PDF_DIRS = {
     "viandesuisse": "./pdfs/viandesuisse",
     "migusto": "./pdfs/migusto",
     "qoqa": "./pdfs/qoqa",
+    "fooby": "./pdfs/fooby",
 }
 
 
@@ -75,7 +76,7 @@ def _parse_args() -> argparse.Namespace:
         choices=_SITES + ["all"],
         default=["all"],
         metavar="SITE",
-        help="Sites to process: viandesuisse, migusto, qoqa, or all (default: all)",
+        help="Sites to process: viandesuisse, migusto, qoqa, fooby, or all (default: all)",
     )
     parser.add_argument(
         "--batch-size",
